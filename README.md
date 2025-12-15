@@ -276,6 +276,53 @@ curl -X POST http://localhost:3000/api/multisig/3ABC.../sign \
   -d '{"tx_id": "TX_ID", "signer_pubkey": "<pubkey1>", "signature": "<sig1>"}'
 ```
 
+### Tokens (ERC-20 Style)
+
+Create and manage fungible tokens with a standard ERC-20 interface:
+
+| API Endpoint | Description |
+|--------------|-------------|
+| `POST /api/tokens` | Create new token |
+| `GET /api/tokens` | List all tokens |
+| `GET /api/tokens/{addr}` | Get token info |
+| `GET /api/tokens/{addr}/balance/{holder}` | Get balance |
+| `POST /api/tokens/{addr}/transfer` | Transfer tokens |
+| `POST /api/tokens/{addr}/approve` | Approve spender |
+| `GET /api/tokens/{addr}/allowance` | Check allowance |
+| `POST /api/tokens/{addr}/transferFrom` | Delegated transfer |
+
+```bash
+# Create a new token
+curl -X POST http://localhost:3000/api/tokens \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My Token",
+    "symbol": "MTK",
+    "decimals": 18,
+    "total_supply": "1000000",
+    "creator": "1ABC..."
+  }'
+
+# Check token balance
+curl http://localhost:3000/api/tokens/0xTOKEN.../balance/1ABC...
+
+# Transfer tokens
+curl -X POST http://localhost:3000/api/tokens/0xTOKEN.../transfer \
+  -H "Content-Type: application/json" \
+  -d '{"from": "1ABC...", "to": "1DEF...", "amount": "1000"}'
+
+# Approve a spender
+curl -X POST http://localhost:3000/api/tokens/0xTOKEN.../approve \
+  -H "Content-Type: application/json" \
+  -d '{"owner": "1ABC...", "spender": "1DEF...", "amount": "5000"}'
+```
+
+**Token vs Coins:**
+| Asset | Description |
+|-------|-------------|
+| **Coins** | Native blockchain currency (from mining) |
+| **Tokens** | Custom assets created via `/api/tokens` |
+
 ---
 
 ## 🏗️ Architecture
@@ -437,10 +484,10 @@ Benchmarks on Intel i7 (single-threaded):
 - [x] Contract deployment via Web UI
 - [x] WebSocket for real-time updates
 - [x] Multi-signature transactions
+- [x] Token standards (ERC-20 style)
 
 ### 🔮 Future Ideas
 
-- [ ] Token standards (ERC-20 style)
 - [ ] Block explorer search
 - [ ] Mobile-responsive UI
 - [ ] Docker deployment
