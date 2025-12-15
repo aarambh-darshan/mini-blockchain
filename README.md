@@ -31,6 +31,7 @@
 | 🌳 **Merkle Trees** | Efficient transaction verification and integrity |
 | 👛 **Wallet System** | Key generation with Base58Check addresses |
 | ✍️ **Multi-Signature** | M-of-N threshold signatures for shared wallets |
+| 🪙 **Token Standards** | ERC-20 style fungible tokens with transfers and approvals |
 | 📬 **Transaction Pool** | Mempool for pending transactions |
 | 💾 **Persistence** | JSON storage with automatic backup rotation |
 | 🌐 **P2P Networking** | TCP-based peer discovery, block/tx gossip, chain sync |
@@ -194,6 +195,7 @@ The REST API server includes an embedded Web UI built with SvelteKit + shadcn-sv
 | Mining | Mine blocks with reward display |
 | Contracts | Deploy, list, and call contracts |
 | Multisig | Create M-of-N wallets, view pending transactions |
+| Tokens | Create ERC-20 tokens, transfer, check balances |
 | Mempool | View pending transactions |
 
 ```bash

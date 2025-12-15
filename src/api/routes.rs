@@ -128,6 +128,30 @@ pub fn create_router(state: ApiState) -> Router {
             "/api/multisig/{address}/pending",
             get(handlers::list_pending_tx),
         )
+        // Tokens (ERC-20 style)
+        .route("/api/tokens", get(handlers::list_tokens))
+        .route("/api/tokens", post(handlers::create_token))
+        .route("/api/tokens/{address}", get(handlers::get_token))
+        .route(
+            "/api/tokens/{address}/balance/{holder}",
+            get(handlers::get_token_balance),
+        )
+        .route(
+            "/api/tokens/{address}/transfer",
+            post(handlers::transfer_tokens),
+        )
+        .route(
+            "/api/tokens/{address}/approve",
+            post(handlers::approve_tokens),
+        )
+        .route(
+            "/api/tokens/{address}/allowance",
+            get(handlers::get_token_allowance),
+        )
+        .route(
+            "/api/tokens/{address}/transferFrom",
+            post(handlers::transfer_from_tokens),
+        )
         // Static files (Web UI)
         .route("/", get(index_handler))
         .fallback(fallback_handler)

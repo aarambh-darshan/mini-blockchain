@@ -6,6 +6,7 @@ use crate::core::{Blockchain, Transaction};
 use crate::mining::{Mempool, Miner};
 use crate::multisig::{MultisigConfig, MultisigManager, MultisigSignature};
 use crate::storage::Storage;
+use crate::token::TokenManager;
 use crate::wallet::WalletManager;
 use axum::{
     extract::{Path, State},
@@ -26,6 +27,7 @@ pub struct ApiState {
     pub contract_manager: Arc<RwLock<ContractManager>>,
     pub ws_broadcaster: Arc<WsBroadcaster>,
     pub multisig_manager: Arc<RwLock<MultisigManager>>,
+    pub token_manager: Arc<RwLock<TokenManager>>,
 }
 
 // ============================================================================
@@ -794,4 +796,330 @@ pub async fn list_pending_tx(
         .collect();
 
     Json(pending)
+}
+
+// ============================================================================
+// Token Endpoints
+// ============================================================================
+
+/// Request to create a token
+#[derive(Deserialize)]
+pub struct CreateTokenRequest {
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub total_supply: String,
+    pub creator: String,
+}
+
+/// Token info response
+#[derive(Serialize)]
+pub struct TokenInfo {
+    pub address: String,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub total_supply: String,
+    pub creator: String,
+    pub created_at_block: u64,
+    pub holder_count: usize,
+}
+
+/// Token balance response
+#[derive(Serialize)]
+pub struct TokenBalanceResponse {
+    pub token: String,
+    pub holder: String,
+    pub balance: String,
+}
+
+/// Transfer request
+#[derive(Deserialize)]
+pub struct TokenTransferRequest {
+    pub from: String,
+    pub to: String,
+    pub amount: String,
+}
+
+/// Approve request
+#[derive(Deserialize)]
+pub struct TokenApproveRequest {
+    pub owner: String,
+    pub spender: String,
+    pub amount: String,
+}
+
+/// Transfer from request
+#[derive(Deserialize)]
+pub struct TokenTransferFromRequest {
+    pub spender: String,
+    pub from: String,
+    pub to: String,
+    pub amount: String,
+}
+
+/// Allowance query params
+#[derive(Deserialize)]
+pub struct AllowanceQuery {
+    pub owner: String,
+    pub spender: String,
+}
+
+/// Transfer response
+#[derive(Serialize)]
+pub struct TransferResponse {
+    pub success: bool,
+    pub from: String,
+    pub to: String,
+    pub amount: String,
+}
+
+/// POST /api/tokens - Create a new token
+pub async fn create_token(
+    State(state): State<ApiState>,
+    Json(req): Json<CreateTokenRequest>,
+) -> Result<Json<TokenInfo>, (StatusCode, Json<ApiError>)> {
+    let total_supply: u128 = req.total_supply.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid total_supply: must be a valid number".to_string(),
+            }),
+        )
+    })?;
+
+    let blockchain = state.blockchain.read().await;
+    let mut manager = state.token_manager.write().await;
+
+    let token = manager
+        .create_token(
+            req.name,
+            req.symbol,
+            req.decimals,
+            total_supply,
+            &req.creator,
+            blockchain.height(),
+        )
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("Failed to create token: {}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(TokenInfo {
+        address: token.address.clone(),
+        name: token.name().to_string(),
+        symbol: token.symbol().to_string(),
+        decimals: token.decimals(),
+        total_supply: token.total_supply().to_string(),
+        creator: token.metadata.creator.clone(),
+        created_at_block: token.metadata.created_at_block,
+        holder_count: token.holder_count(),
+    }))
+}
+
+/// GET /api/tokens - List all tokens
+pub async fn list_tokens(State(state): State<ApiState>) -> Json<Vec<TokenInfo>> {
+    let manager = state.token_manager.read().await;
+
+    let tokens: Vec<TokenInfo> = manager
+        .list()
+        .iter()
+        .map(|t| TokenInfo {
+            address: t.address.clone(),
+            name: t.name().to_string(),
+            symbol: t.symbol().to_string(),
+            decimals: t.decimals(),
+            total_supply: t.total_supply().to_string(),
+            creator: t.metadata.creator.clone(),
+            created_at_block: t.metadata.created_at_block,
+            holder_count: t.holder_count(),
+        })
+        .collect();
+
+    Json(tokens)
+}
+
+/// GET /api/tokens/{address} - Get token info
+pub async fn get_token(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+) -> Result<Json<TokenInfo>, (StatusCode, Json<ApiError>)> {
+    let manager = state.token_manager.read().await;
+
+    match manager.get(&address) {
+        Some(token) => Ok(Json(TokenInfo {
+            address: token.address.clone(),
+            name: token.name().to_string(),
+            symbol: token.symbol().to_string(),
+            decimals: token.decimals(),
+            total_supply: token.total_supply().to_string(),
+            creator: token.metadata.creator.clone(),
+            created_at_block: token.metadata.created_at_block,
+            holder_count: token.holder_count(),
+        })),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("Token not found: {}", address),
+            }),
+        )),
+    }
+}
+
+/// GET /api/tokens/{address}/balance/{holder} - Get token balance
+pub async fn get_token_balance(
+    State(state): State<ApiState>,
+    Path((address, holder)): Path<(String, String)>,
+) -> Result<Json<TokenBalanceResponse>, (StatusCode, Json<ApiError>)> {
+    let manager = state.token_manager.read().await;
+
+    match manager.balance_of(&address, &holder) {
+        Ok(balance) => Ok(Json(TokenBalanceResponse {
+            token: address,
+            holder,
+            balance: balance.to_string(),
+        })),
+        Err(e) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("{}", e),
+            }),
+        )),
+    }
+}
+
+/// POST /api/tokens/{address}/transfer - Transfer tokens
+pub async fn transfer_tokens(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    Json(req): Json<TokenTransferRequest>,
+) -> Result<Json<TransferResponse>, (StatusCode, Json<ApiError>)> {
+    let amount: u128 = req.amount.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid amount".to_string(),
+            }),
+        )
+    })?;
+
+    let mut manager = state.token_manager.write().await;
+
+    manager
+        .transfer(&address, &req.from, &req.to, amount)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("{}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(TransferResponse {
+        success: true,
+        from: req.from,
+        to: req.to,
+        amount: amount.to_string(),
+    }))
+}
+
+/// POST /api/tokens/{address}/approve - Approve spender
+pub async fn approve_tokens(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    Json(req): Json<TokenApproveRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let amount: u128 = req.amount.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid amount".to_string(),
+            }),
+        )
+    })?;
+
+    let mut manager = state.token_manager.write().await;
+
+    manager
+        .approve(&address, &req.owner, &req.spender, amount)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("{}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "owner": req.owner,
+        "spender": req.spender,
+        "amount": amount.to_string()
+    })))
+}
+
+/// GET /api/tokens/{address}/allowance - Get allowance
+pub async fn get_token_allowance(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<AllowanceQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let manager = state.token_manager.read().await;
+
+    match manager.allowance(&address, &query.owner, &query.spender) {
+        Ok(allowance) => Ok(Json(serde_json::json!({
+            "token": address,
+            "owner": query.owner,
+            "spender": query.spender,
+            "allowance": allowance.to_string()
+        }))),
+        Err(e) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("{}", e),
+            }),
+        )),
+    }
+}
+
+/// POST /api/tokens/{address}/transferFrom - Transfer from (delegated)
+pub async fn transfer_from_tokens(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    Json(req): Json<TokenTransferFromRequest>,
+) -> Result<Json<TransferResponse>, (StatusCode, Json<ApiError>)> {
+    let amount: u128 = req.amount.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid amount".to_string(),
+            }),
+        )
+    })?;
+
+    let mut manager = state.token_manager.write().await;
+
+    manager
+        .transfer_from(&address, &req.spender, &req.from, &req.to, amount)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("{}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(TransferResponse {
+        success: true,
+        from: req.from,
+        to: req.to,
+        amount: amount.to_string(),
+    }))
 }

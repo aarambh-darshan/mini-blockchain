@@ -42,6 +42,7 @@ pub mod mining;
 pub mod multisig;
 pub mod network;
 pub mod storage;
+pub mod token;
 pub mod wallet;
 
 // Re-export commonly used types
@@ -53,4 +54,5 @@ pub use mining::{Mempool, Miner};
 pub use multisig::{MultisigConfig, MultisigManager, MultisigWallet};
 pub use network::{Node, NodeConfig};
 pub use storage::Storage;
+pub use token::{Token, TokenManager, TokenMetadata};
 pub use wallet::Wallet;

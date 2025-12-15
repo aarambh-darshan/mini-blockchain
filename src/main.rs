@@ -11,6 +11,7 @@ use mini_blockchain::mining::Mempool;
 use mini_blockchain::multisig::MultisigManager;
 use mini_blockchain::network::{Node, NodeConfig};
 use mini_blockchain::storage::{Storage, StorageConfig};
+use mini_blockchain::token::TokenManager;
 use mini_blockchain::wallet::WalletManager;
 use std::fs;
 use std::path::PathBuf;
@@ -402,8 +403,23 @@ fn run_api_command(
                 // Create WebSocket broadcaster
                 let ws_broadcaster = Arc::new(WsBroadcaster::new());
 
-                // Create multisig manager
-                let multisig_manager = Arc::new(RwLock::new(MultisigManager::new()));
+                // Load or create multisig manager
+                let multisig_file = data_dir.join("multisig.json");
+                let multisig_manager = if multisig_file.exists() {
+                    let data = std::fs::read_to_string(&multisig_file)?;
+                    Arc::new(RwLock::new(serde_json::from_str(&data)?))
+                } else {
+                    Arc::new(RwLock::new(MultisigManager::new()))
+                };
+
+                // Load or create token manager
+                let tokens_file = data_dir.join("tokens.json");
+                let token_manager = if tokens_file.exists() {
+                    let data = std::fs::read_to_string(&tokens_file)?;
+                    Arc::new(RwLock::new(serde_json::from_str(&data)?))
+                } else {
+                    Arc::new(RwLock::new(TokenManager::new()))
+                };
 
                 // Create API state
                 let state = ApiState {
@@ -414,7 +430,12 @@ fn run_api_command(
                     contract_manager,
                     ws_broadcaster,
                     multisig_manager,
+                    token_manager,
                 };
+
+                // Clone state for shutdown handler
+                let shutdown_state = state.clone();
+                let shutdown_data_dir = data_dir.clone();
 
                 // Create router
                 let app = create_router(state);
@@ -443,12 +464,43 @@ fn run_api_command(
                 println!("   POST /api/multisig                - Create multisig wallet");
                 println!("   POST /api/multisig/{{addr}}/propose  - Propose transaction");
                 println!("   POST /api/multisig/{{addr}}/sign     - Sign transaction");
+                println!("   GET  /api/tokens                  - List tokens");
+                println!("   POST /api/tokens                  - Create token");
+                println!("   GET  /api/tokens/{{addr}}/balance/{{h}} - Token balance");
+                println!("   POST /api/tokens/{{addr}}/transfer   - Transfer tokens");
                 println!();
 
-                // Handle Ctrl+C
-                tokio::spawn(async {
+                // Handle Ctrl+C with graceful shutdown
+                tokio::spawn(async move {
                     tokio::signal::ctrl_c().await.ok();
                     println!("\n📴 Shutting down API server...");
+
+                    // Save all data before exit
+                    println!("💾 Saving data...");
+
+                    // Save contracts
+                    let contracts = shutdown_state.contract_manager.read().await;
+                    if let Ok(data) = serde_json::to_string_pretty(&*contracts) {
+                        let _ = std::fs::write(shutdown_data_dir.join("contracts.json"), data);
+                    }
+
+                    // Save multisig
+                    let multisig = shutdown_state.multisig_manager.read().await;
+                    if let Ok(data) = serde_json::to_string_pretty(&*multisig) {
+                        let _ = std::fs::write(shutdown_data_dir.join("multisig.json"), data);
+                    }
+
+                    // Save tokens
+                    let tokens = shutdown_state.token_manager.read().await;
+                    if let Ok(data) = serde_json::to_string_pretty(&*tokens) {
+                        let _ = std::fs::write(shutdown_data_dir.join("tokens.json"), data);
+                    }
+
+                    // Save blockchain
+                    let blockchain = shutdown_state.blockchain.read().await;
+                    let _ = shutdown_state.storage.save(&blockchain);
+
+                    println!("✅ Data saved successfully!");
                     std::process::exit(0);
                 });
 
