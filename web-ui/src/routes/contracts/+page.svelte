@@ -4,8 +4,10 @@
         listContracts,
         deployContract,
         callContract,
+        getWallets,
         type ContractInfo,
         type CallResponse,
+        type WalletResponse,
     } from "$lib/api";
     import * as Card from "$lib/components/ui/card";
     import { Button } from "$lib/components/ui/button";
@@ -16,6 +18,7 @@
     import * as Tabs from "$lib/components/ui/tabs";
 
     let contracts = $state<ContractInfo[]>([]);
+    let wallets = $state<WalletResponse[]>([]);
     let selectedContract = $state<ContractInfo | null>(null);
     let loading = $state(true);
 
@@ -34,12 +37,15 @@ RETURN`);
 
     // Call state
     let callArgs = $state("10, 25");
+    let gasPrice = $state(1);
+    let gasLimit = $state(100);
+    let selectedCaller = $state("");
     let calling = $state(false);
     let callResult = $state<CallResponse | null>(null);
     let callError = $state("");
 
     onMount(async () => {
-        await loadContracts();
+        await Promise.all([loadContracts(), loadWallets()]);
     });
 
     async function loadContracts() {
@@ -53,6 +59,17 @@ RETURN`);
             console.error(e);
         } finally {
             loading = false;
+        }
+    }
+
+    async function loadWallets() {
+        try {
+            wallets = await getWallets();
+            if (wallets.length > 0 && !selectedCaller) {
+                selectedCaller = wallets[0].address;
+            }
+        } catch (e) {
+            console.error(e);
         }
     }
 
@@ -83,7 +100,11 @@ RETURN`);
                 .split(",")
                 .map((s) => parseInt(s.trim()))
                 .filter((n) => !isNaN(n));
-            callResult = await callContract(selectedContract.address, args);
+            callResult = await callContract(selectedContract.address, args, {
+                gasLimit: gasLimit,
+                gasPrice: gasPrice,
+                callerAddress: selectedCaller || undefined,
+            });
         } catch (e: any) {
             callError = e.message;
         } finally {
@@ -330,6 +351,46 @@ RETURN`);
                             />
                         </div>
 
+                        <div class="grid grid-cols-3 gap-4">
+                            <div class="space-y-2">
+                                <Label for="gasLimit">Gas Limit</Label>
+                                <Input
+                                    id="gasLimit"
+                                    type="number"
+                                    bind:value={gasLimit}
+                                    min="1"
+                                />
+                            </div>
+                            <div class="space-y-2">
+                                <Label for="gasPrice">Gas Price</Label>
+                                <Input
+                                    id="gasPrice"
+                                    type="number"
+                                    bind:value={gasPrice}
+                                    min="0"
+                                />
+                            </div>
+                            <div class="space-y-2">
+                                <Label for="caller">Pay Gas From (Wallet)</Label
+                                >
+                                <select
+                                    id="caller"
+                                    bind:value={selectedCaller}
+                                    class="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
+                                >
+                                    <option value="">Anonymous (free)</option>
+                                    {#each wallets as wallet}
+                                        <option value={wallet.address}
+                                            >{wallet.address.slice(
+                                                0,
+                                                20,
+                                            )}...</option
+                                        >
+                                    {/each}
+                                </select>
+                            </div>
+                        </div>
+
                         {#if callError}
                             <p class="text-sm text-destructive">{callError}</p>
                         {/if}
@@ -396,6 +457,35 @@ RETURN`);
                                             {callResult.gas_used}
                                         </p>
                                     </div>
+                                </div>
+
+                                <Separator />
+
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div class="space-y-1">
+                                        <p
+                                            class="text-sm text-muted-foreground"
+                                        >
+                                            💰 Gas Cost
+                                        </p>
+                                        <p
+                                            class="text-xl font-bold text-amber-500"
+                                        >
+                                            {callResult.gas_cost} coins
+                                        </p>
+                                    </div>
+                                    {#if callResult.caller_balance !== null}
+                                        <div class="space-y-1">
+                                            <p
+                                                class="text-sm text-muted-foreground"
+                                            >
+                                                Remaining Balance
+                                            </p>
+                                            <p class="text-xl font-bold">
+                                                {callResult.caller_balance} coins
+                                            </p>
+                                        </div>
+                                    {/if}
                                 </div>
                             </div>
                         {:else}

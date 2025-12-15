@@ -5,6 +5,7 @@
   import { Button } from "$lib/components/ui/button";
   import { Separator } from "$lib/components/ui/separator";
   import ConnectionStatus from "$lib/components/ConnectionStatus.svelte";
+  import SearchBar from "$lib/components/SearchBar.svelte";
   import { connectWebSocket, disconnectWebSocket } from "$lib/websocket";
 
   const navItems = [
@@ -52,7 +53,8 @@
           {/each}
         </nav>
       </div>
-      <div class="flex flex-1 items-center justify-end space-x-2">
+      <div class="flex flex-1 items-center justify-end space-x-4">
+        <SearchBar />
         <Button variant="outline" size="sm" class="hidden md:flex">
           <ConnectionStatus />
         </Button>

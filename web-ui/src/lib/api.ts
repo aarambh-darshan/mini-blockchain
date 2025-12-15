@@ -148,6 +148,8 @@ export interface CallResponse {
     success: boolean;
     return_value: number | null;
     gas_used: number;
+    gas_cost: number;
+    caller_balance: number | null;
 }
 
 // Contract endpoints
@@ -174,11 +176,24 @@ export async function getContract(address: string): Promise<ContractInfo> {
     return res.json();
 }
 
-export async function callContract(address: string, args: number[], gasLimit?: number): Promise<CallResponse> {
+export async function callContract(
+    address: string,
+    args: number[],
+    options?: {
+        gasLimit?: number;
+        gasPrice?: number;
+        callerAddress?: string;
+    }
+): Promise<CallResponse> {
     const res = await fetch(`${API_BASE}/contracts/${address}/call`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ args, gas_limit: gasLimit })
+        body: JSON.stringify({
+            args,
+            gas_limit: options?.gasLimit,
+            gas_price: options?.gasPrice,
+            caller_address: options?.callerAddress
+        })
     });
     if (!res.ok) {
         const error = await res.json();
@@ -419,4 +434,23 @@ export async function getTokenAllowance(
     return res.json();
 }
 
+// Search types
+export interface SearchResult {
+    query: string;
+    blocks: BlockInfo[];
+    transactions: TransactionResponse[];
+    wallets: WalletResponse[];
+    contracts: ContractInfo[];
+    tokens: TokenInfo[];
+    multisig: MultisigWalletInfo[];
+}
 
+// Search endpoint
+export async function search(query: string): Promise<SearchResult> {
+    const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Search failed');
+    }
+    return res.json();
+}

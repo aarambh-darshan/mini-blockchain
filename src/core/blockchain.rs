@@ -328,6 +328,48 @@ impl Blockchain {
         self.utxo_set.get(&key)
     }
 
+    /// Burn (remove) coins from an address as gas fees
+    /// This modifies the UTXO set directly to deduct the amount
+    /// Returns the actual amount burned (may be less if insufficient funds)
+    pub fn burn_from_address(&mut self, address: &str, amount: u64) -> u64 {
+        if amount == 0 {
+            return 0;
+        }
+
+        let mut remaining = amount;
+        let mut keys_to_remove = Vec::new();
+        let mut updates = Vec::new();
+
+        // Find UTXOs for this address
+        for (key, utxo) in self.utxo_set.iter() {
+            if utxo.output.recipient == address && remaining > 0 {
+                if utxo.output.amount <= remaining {
+                    // Remove entire UTXO
+                    remaining -= utxo.output.amount;
+                    keys_to_remove.push(key.clone());
+                } else {
+                    // Reduce UTXO amount
+                    let new_amount = utxo.output.amount - remaining;
+                    updates.push((key.clone(), utxo.clone(), new_amount));
+                    remaining = 0;
+                }
+            }
+        }
+
+        // Apply removals
+        for key in keys_to_remove {
+            self.utxo_set.remove(&key);
+        }
+
+        // Apply updates (reduce UTXO amount)
+        for (key, mut utxo, new_amount) in updates {
+            utxo.output.amount = new_amount;
+            self.utxo_set.insert(key, utxo);
+        }
+
+        amount - remaining
+    }
+
     /// Get all transactions for an address
     pub fn get_transactions_for_address(&self, address: &str) -> Vec<&Transaction> {
         let mut transactions = Vec::new();
