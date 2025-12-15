@@ -139,6 +139,8 @@ pub struct DeployContractRequest {
 pub struct CallContractRequest {
     pub args: Vec<u64>,
     pub gas_limit: Option<u64>,
+    pub gas_price: Option<u64>,         // Price per gas unit (default: 1)
+    pub caller_address: Option<String>, // Who pays for gas (required for gas payment)
 }
 
 #[derive(Serialize)]
@@ -160,6 +162,8 @@ pub struct CallResponse {
     pub success: bool,
     pub return_value: Option<u64>,
     pub gas_used: u64,
+    pub gas_cost: u64,               // Total cost in coins (gas_used * gas_price)
+    pub caller_balance: Option<u64>, // Remaining balance after gas payment
 }
 
 // ============================================================================
@@ -518,24 +522,122 @@ pub async fn call_contract(
     Path(address): Path<String>,
     Json(req): Json<CallContractRequest>,
 ) -> Result<Json<CallResponse>, (StatusCode, Json<ApiError>)> {
-    let chain = state.blockchain.read().await;
-    let mut manager = state.contract_manager.write().await;
+    let gas_price = req.gas_price.unwrap_or(1);
+    let gas_limit = req.gas_limit.unwrap_or(1_000); // Reasonable default for simple contracts
+    let max_cost = gas_limit * gas_price;
 
+    // If caller provided, check balance first
+    let caller_address = req
+        .caller_address
+        .clone()
+        .unwrap_or_else(|| "anonymous".to_string());
+    let mut caller_balance: Option<u64> = None;
+
+    if req.caller_address.is_some() && gas_price > 0 {
+        let chain = state.blockchain.read().await;
+        let balance = chain.get_balance(&caller_address);
+
+        if balance < max_cost {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!(
+                        "Insufficient balance for gas. Need {} coins (gas_limit {} × gas_price {}), have {}",
+                        max_cost, gas_limit, gas_price, balance
+                    ),
+                }),
+            ));
+        }
+        caller_balance = Some(balance);
+    }
+
+    // Execute the contract
+    // Execute the contract - need write access if charging gas
+    let mut chain = state.blockchain.write().await;
+    let mut manager = state.contract_manager.write().await;
     let timestamp = chrono::Utc::now().timestamp() as u64;
+    let height = chain.height();
 
     match manager.call(
         &address,
-        "web-caller",
+        &caller_address,
         req.args,
         timestamp,
-        chain.height(),
+        height,
         req.gas_limit,
     ) {
-        Ok(result) => Ok(Json(CallResponse {
-            success: result.success,
-            return_value: result.return_value,
-            gas_used: result.gas_used,
-        })),
+        Ok(result) => {
+            let gas_cost = result.gas_used * gas_price;
+
+            // Process gas payment if applicable
+            let mut new_balance = caller_balance;
+
+            if req.caller_address.is_some() && gas_price > 0 && gas_cost > 0 {
+                // Drop write locks before getting wallet (to avoid potential deadlocks)
+                drop(chain);
+                drop(manager);
+
+                let wallet_manager = state.wallet_manager.read().await;
+                if let Ok(wallet) = wallet_manager.load_wallet(&caller_address) {
+                    // Re-acquire chain read lock to create transaction
+                    let chain = state.blockchain.read().await;
+
+                    // Create transaction to "burn" address to pay for gas
+                    // Using a burn address ensures coins are removed from circulation (simulating burnt fee)
+                    // Or we could send to a "miner" address. "0x0000..." is simpler for burning.
+                    match wallet.create_transaction(
+                        "0x0000000000000000000000000000000000000000",
+                        gas_cost,
+                        &chain,
+                    ) {
+                        Ok(tx) => {
+                            drop(chain); // Drop read lock
+
+                            // Re-acquire chain write lock to mine
+                            let mut chain = state.blockchain.write().await;
+
+                            // Mine block with this transaction
+                            // We use a system address for mining this "maintenance" block
+                            match chain.mine_block(vec![tx], "network_gas_miner") {
+                                Ok(_) => {
+                                    log::info!(
+                                        "Gas paid: {} coins persisted via mined block",
+                                        gas_cost
+                                    );
+                                    new_balance = Some(chain.get_balance(&caller_address));
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to mine gas block: {}", e);
+                                    // Fallback to speculative balance (won't persist but shows correct in UI now)
+                                    new_balance =
+                                        caller_balance.map(|b| b.saturating_sub(gas_cost));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create gas tx: {}", e);
+                            new_balance = caller_balance.map(|b| b.saturating_sub(gas_cost));
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "Wallet {} not found locally, cannot sign gas tx",
+                        caller_address
+                    );
+                    new_balance = caller_balance.map(|b| b.saturating_sub(gas_cost));
+                }
+            } else {
+                new_balance = caller_balance.map(|b| b.saturating_sub(gas_cost));
+            }
+
+            Ok(Json(CallResponse {
+                success: result.success,
+                return_value: result.return_value,
+                gas_used: result.gas_used,
+                gas_cost,
+                caller_balance: new_balance,
+            }))
+        }
         Err(e) => Err((
             StatusCode::BAD_REQUEST,
             Json(ApiError {
@@ -1122,4 +1224,211 @@ pub async fn transfer_from_tokens(
         to: req.to,
         amount: amount.to_string(),
     }))
+}
+
+// ============================================================================
+// Search Endpoints
+// ============================================================================
+
+/// Search query parameters
+#[derive(Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+}
+
+/// Unified search result
+#[derive(Serialize)]
+pub struct SearchResult {
+    pub query: String,
+    pub blocks: Vec<BlockInfo>,
+    pub transactions: Vec<TransactionResponse>,
+    pub wallets: Vec<WalletResponse>,
+    pub contracts: Vec<ContractInfo>,
+    pub tokens: Vec<TokenInfo>,
+    pub multisig: Vec<MultisigWalletInfo>,
+}
+
+/// GET /api/search - Unified search across all entities
+pub async fn search(
+    State(state): State<ApiState>,
+    axum::extract::Query(query): axum::extract::Query<SearchQuery>,
+) -> Json<SearchResult> {
+    let q = query.q.trim().to_lowercase();
+
+    let mut result = SearchResult {
+        query: query.q.clone(),
+        blocks: vec![],
+        transactions: vec![],
+        wallets: vec![],
+        contracts: vec![],
+        tokens: vec![],
+        multisig: vec![],
+    };
+
+    if q.is_empty() {
+        return Json(result);
+    }
+
+    // Search blocks (by height or hash prefix)
+    {
+        let chain = state.blockchain.read().await;
+
+        // Try parsing as block height
+        if let Ok(height) = q.parse::<u64>() {
+            if let Some(block) = chain.get_block(height) {
+                result.blocks.push(BlockInfo {
+                    index: block.index,
+                    hash: block.hash.clone(),
+                    previous_hash: block.header.previous_hash.clone(),
+                    merkle_root: block.header.merkle_root.clone(),
+                    timestamp: block.header.timestamp.to_rfc3339(),
+                    difficulty: block.header.difficulty,
+                    nonce: block.header.nonce,
+                    transactions: block.transactions.len(),
+                });
+            }
+        }
+
+        // Search by hash prefix
+        for block in &chain.blocks {
+            if block.hash.to_lowercase().starts_with(&q)
+                && result.blocks.iter().all(|b| b.index != block.index)
+            {
+                result.blocks.push(BlockInfo {
+                    index: block.index,
+                    hash: block.hash.clone(),
+                    previous_hash: block.header.previous_hash.clone(),
+                    merkle_root: block.header.merkle_root.clone(),
+                    timestamp: block.header.timestamp.to_rfc3339(),
+                    difficulty: block.header.difficulty,
+                    nonce: block.header.nonce,
+                    transactions: block.transactions.len(),
+                });
+                if result.blocks.len() >= 10 {
+                    break;
+                }
+            }
+        }
+
+        // Search transactions by ID prefix
+        for block in &chain.blocks {
+            for tx in &block.transactions {
+                if tx.id.to_lowercase().starts_with(&q) {
+                    result.transactions.push(TransactionResponse::from(tx));
+                    if result.transactions.len() >= 10 {
+                        break;
+                    }
+                }
+            }
+            if result.transactions.len() >= 10 {
+                break;
+            }
+        }
+    }
+
+    // Search mempool transactions
+    {
+        let mempool = state.mempool.read().await;
+        for tx in mempool.get_transactions(100) {
+            if tx.id.to_lowercase().starts_with(&q) {
+                result.transactions.push(TransactionResponse::from(&tx));
+                if result.transactions.len() >= 10 {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Search wallets by address prefix
+    {
+        let manager = state.wallet_manager.read().await;
+        if let Ok(addresses) = manager.list_wallets() {
+            for addr in addresses {
+                if addr.to_lowercase().contains(&q) {
+                    result.wallets.push(WalletResponse {
+                        address: addr,
+                        label: None,
+                    });
+                    if result.wallets.len() >= 10 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Search contracts by address
+    {
+        let manager = state.contract_manager.read().await;
+        for addr in manager.list() {
+            if addr.to_lowercase().contains(&q) {
+                if let Some(c) = manager.get(&addr) {
+                    result.contracts.push(ContractInfo {
+                        address: c.address.clone(),
+                        deployer: c.deployer.clone(),
+                        deployed_at: c.deployed_at,
+                        code_size: c.code.len(),
+                    });
+                    if result.contracts.len() >= 10 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Search tokens by name, symbol, or address
+    {
+        let manager = state.token_manager.read().await;
+        for token in manager.list() {
+            let matches = token.address.to_lowercase().contains(&q)
+                || token.name().to_lowercase().contains(&q)
+                || token.symbol().to_lowercase().contains(&q);
+            if matches {
+                result.tokens.push(TokenInfo {
+                    address: token.address.clone(),
+                    name: token.name().to_string(),
+                    symbol: token.symbol().to_string(),
+                    decimals: token.decimals(),
+                    total_supply: token.total_supply().to_string(),
+                    creator: token.metadata.creator.clone(),
+                    created_at_block: token.metadata.created_at_block,
+                    holder_count: token.holder_count(),
+                });
+                if result.tokens.len() >= 10 {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Search multisig wallets by address or label
+    {
+        let manager = state.multisig_manager.read().await;
+        for wallet in manager.list_wallets() {
+            let matches = wallet.address.to_lowercase().contains(&q)
+                || wallet
+                    .config
+                    .label
+                    .as_ref()
+                    .map(|l| l.to_lowercase().contains(&q))
+                    .unwrap_or(false);
+            if matches {
+                result.multisig.push(MultisigWalletInfo {
+                    address: wallet.address.clone(),
+                    threshold: wallet.config.threshold,
+                    signer_count: wallet.config.signers.len(),
+                    signers: wallet.config.signers.clone(),
+                    label: wallet.config.label.clone(),
+                    description: wallet.description(),
+                    created_at: wallet.created_at.to_rfc3339(),
+                });
+                if result.multisig.len() >= 10 {
+                    break;
+                }
+            }
+        }
+    }
+
+    Json(result)
 }

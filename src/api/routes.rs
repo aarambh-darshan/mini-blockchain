@@ -152,6 +152,8 @@ pub fn create_router(state: ApiState) -> Router {
             "/api/tokens/{address}/transferFrom",
             post(handlers::transfer_from_tokens),
         )
+        // Search
+        .route("/api/search", get(handlers::search))
         // Static files (Web UI)
         .route("/", get(index_handler))
         .fallback(fallback_handler)

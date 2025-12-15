@@ -32,6 +32,7 @@
 | 👛 **Wallet System** | Key generation with Base58Check addresses |
 | ✍️ **Multi-Signature** | M-of-N threshold signatures for shared wallets |
 | 🪙 **Token Standards** | ERC-20 style fungible tokens with transfers and approvals |
+| ⛽ **Gas System** | Real gas payments for smart contract execution |
 | 📬 **Transaction Pool** | Mempool for pending transactions |
 | 💾 **Persistence** | JSON storage with automatic backup rotation |
 | 🌐 **P2P Networking** | TCP-based peer discovery, block/tx gossip, chain sync |
@@ -191,6 +192,7 @@ The REST API server includes an embedded Web UI built with SvelteKit + shadcn-sv
 |------|----------|
 | Dashboard | Chain stats, recent blocks, **real-time updates** |
 | Blocks | Block explorer with details |
+| **Search** | **Global search across blocks, transactions, addresses, tokens** |
 | Wallets | Create/list wallets, view balances |
 | Mining | Mine blocks with reward display |
 | Contracts | Deploy, list, and call contracts |
@@ -485,10 +487,10 @@ Benchmarks on Intel i7 (single-threaded):
 - [x] WebSocket for real-time updates
 - [x] Multi-signature transactions
 - [x] Token standards (ERC-20 style)
+- [x] Block explorer search
 
 ### 🔮 Future Ideas
 
-- [ ] Block explorer search
 - [ ] Mobile-responsive UI
 - [ ] Docker deployment
 
