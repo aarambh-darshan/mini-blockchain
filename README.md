@@ -34,6 +34,7 @@
 | 💾 **Persistence** | JSON storage with automatic backup rotation |
 | 🌐 **P2P Networking** | TCP-based peer discovery, block/tx gossip, chain sync |
 | 🚀 **REST API** | HTTP API with Axum for programmatic access |
+| 🔌 **WebSocket** | Real-time updates for blocks, transactions, and chain state |
 | 📜 **Smart Contracts** | Stack-based VM with custom bytecode and storage |
 | 🌐 **Web UI** | SvelteKit + shadcn-svelte dashboard (embedded in binary) |
 | 🖥️ **Full CLI** | Complete command-line interface |
@@ -186,7 +187,7 @@ The REST API server includes an embedded Web UI built with SvelteKit + shadcn-sv
 
 | Page | Features |
 |------|----------|
-| Dashboard | Chain stats, recent blocks |
+| Dashboard | Chain stats, recent blocks, **real-time updates** |
 | Blocks | Block explorer with details |
 | Wallets | Create/list wallets, view balances |
 | Mining | Mine blocks with reward display |
@@ -197,6 +198,26 @@ The REST API server includes an embedded Web UI built with SvelteKit + shadcn-sv
 # Start the server and open the Web UI
 blockchain api start --port 3000
 # Visit http://localhost:3000
+```
+
+### WebSocket
+
+Connect to `/ws` for real-time updates. Events are JSON with the following types:
+
+| Event | Description |
+|-------|-------------|
+| `Connected` | Connection established |
+| `BlockMined` | New block mined (includes block info and reward) |
+| `TransactionAdded` | Transaction added to mempool |
+| `ChainUpdated` | Chain state changed |
+
+```javascript
+// JavaScript example
+const ws = new WebSocket('ws://localhost:3000/ws');
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log(data.type, data.data);
+};
 ```
 
 ### Smart Contracts
@@ -382,10 +403,10 @@ Benchmarks on Intel i7 (single-threaded):
 - [x] Smart contracts (VM, compiler, storage)
 - [x] Web UI (SvelteKit + shadcn-svelte)
 - [x] Contract deployment via Web UI
+- [x] WebSocket for real-time updates
 
 ### 🔮 Future Ideas
 
-- [ ] WebSocket for real-time updates
 - [ ] Multi-signature transactions
 - [ ] Token standards (ERC-20 style)
 - [ ] Block explorer search

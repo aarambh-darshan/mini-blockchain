@@ -6,6 +6,7 @@
         type ChainInfo,
         type BlockInfo,
     } from "$lib/api";
+    import { latestEvent, type WsEvent } from "$lib/websocket";
     import * as Card from "$lib/components/ui/card";
     import { Badge } from "$lib/components/ui/badge";
     import { Button } from "$lib/components/ui/button";
@@ -15,6 +16,31 @@
     let recentBlocks = $state<BlockInfo[]>([]);
     let loading = $state(true);
     let error = $state("");
+    let lastUpdate = $state<Date | null>(null);
+
+    // Subscribe to WebSocket events
+    $effect(() => {
+        const event = $latestEvent;
+        if (event?.type === "BlockMined") {
+            // Add new block to the front of the list
+            const newBlock = event.data.block;
+            recentBlocks = [newBlock, ...recentBlocks.slice(0, 9)];
+
+            // Update chain info
+            if (chainInfo) {
+                chainInfo = {
+                    ...chainInfo,
+                    height: newBlock.index,
+                    total_blocks: chainInfo.total_blocks + 1,
+                    total_transactions:
+                        chainInfo.total_transactions + newBlock.transactions,
+                    total_coins: chainInfo.total_coins + event.data.reward,
+                    latest_hash: newBlock.hash,
+                };
+            }
+            lastUpdate = new Date();
+        }
+    });
 
     onMount(async () => {
         try {
