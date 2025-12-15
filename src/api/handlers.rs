@@ -1,5 +1,6 @@
 //! REST API handlers for blockchain operations
 
+use crate::api::websocket::WsBroadcaster;
 use crate::contract::{Compiler, ContractManager};
 use crate::core::{Blockchain, Transaction};
 use crate::mining::{Mempool, Miner};
@@ -22,6 +23,7 @@ pub struct ApiState {
     pub storage: Arc<Storage>,
     pub wallet_manager: Arc<RwLock<WalletManager>>,
     pub contract_manager: Arc<RwLock<ContractManager>>,
+    pub ws_broadcaster: Arc<WsBroadcaster>,
 }
 
 // ============================================================================
@@ -38,7 +40,7 @@ pub struct ChainInfo {
     pub latest_hash: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct BlockInfo {
     pub index: u64,
     pub hash: String,
@@ -65,7 +67,7 @@ pub struct BalanceResponse {
     pub utxo_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TransactionResponse {
     pub id: String,
     pub is_coinbase: bool,
@@ -264,6 +266,19 @@ pub async fn mine_block(
 
     match miner.mine_block(&mut chain, transactions) {
         Ok((block, stats)) => {
+            // Create block info for response and WebSocket
+            let block_info = BlockInfo {
+                index: block.index,
+                hash: block.hash.clone(),
+                previous_hash: block.header.previous_hash.clone(),
+                merkle_root: block.header.merkle_root.clone(),
+                timestamp: block.header.timestamp.to_rfc3339(),
+                difficulty: block.header.difficulty,
+                nonce: block.header.nonce,
+                transactions: block.transactions.len(),
+            };
+            let reward = block.mining_reward();
+
             drop(chain);
 
             // Save blockchain
@@ -272,18 +287,17 @@ pub async fn mine_block(
                 log::error!("Failed to save blockchain: {}", e);
             }
 
+            // Broadcast BlockMined event to WebSocket clients
+            state
+                .ws_broadcaster
+                .broadcast(crate::api::websocket::WsEvent::BlockMined {
+                    block: block_info.clone(),
+                    reward,
+                });
+
             Ok(Json(MineResponse {
-                block: BlockInfo {
-                    index: block.index,
-                    hash: block.hash.clone(),
-                    previous_hash: block.header.previous_hash.clone(),
-                    merkle_root: block.header.merkle_root.clone(),
-                    timestamp: block.header.timestamp.to_rfc3339(),
-                    difficulty: block.header.difficulty,
-                    nonce: block.header.nonce,
-                    transactions: block.transactions.len(),
-                },
-                reward: block.mining_reward(),
+                block: block_info,
+                reward,
                 time_ms: stats.time_ms,
                 attempts: stats.hash_attempts,
             }))

@@ -3,7 +3,7 @@
 //! A command-line interface for interacting with the blockchain.
 
 use clap::{Parser, Subcommand};
-use mini_blockchain::api::{create_router, ApiState};
+use mini_blockchain::api::{create_router, ApiState, WsBroadcaster};
 use mini_blockchain::cli::{self, AppState};
 use mini_blockchain::contract::{Compiler, ContractManager};
 use mini_blockchain::core::Blockchain;
@@ -398,6 +398,9 @@ fn run_api_command(
                     Arc::new(RwLock::new(ContractManager::new()))
                 };
 
+                // Create WebSocket broadcaster
+                let ws_broadcaster = Arc::new(WsBroadcaster::new());
+
                 // Create API state
                 let state = ApiState {
                     blockchain,
@@ -405,6 +408,7 @@ fn run_api_command(
                     storage,
                     wallet_manager,
                     contract_manager,
+                    ws_broadcaster,
                 };
 
                 // Create router
@@ -416,19 +420,20 @@ fn run_api_command(
                 println!();
                 println!("📖 Available endpoints:");
                 println!("   GET  /health                      - Health check");
+                println!("   GET  /ws                          - WebSocket updates");
                 println!("   GET  /api/chain                   - Blockchain info");
                 println!("   GET  /api/chain/blocks            - List blocks");
-                println!("   GET  /api/chain/blocks/:height    - Get block");
+                println!("   GET  /api/chain/blocks/{{height}}   - Get block");
                 println!("   GET  /api/chain/validate          - Validate chain");
                 println!("   POST /api/mine                    - Mine block");
                 println!("   GET  /api/mempool                 - Pending transactions");
-                println!("   GET  /api/transactions/:id        - Get transaction");
+                println!("   GET  /api/transactions/{{id}}       - Get transaction");
                 println!("   GET  /api/wallets                 - List wallets");
                 println!("   POST /api/wallets                 - Create wallet");
-                println!("   GET  /api/wallets/:addr/balance   - Get balance");
+                println!("   GET  /api/wallets/{{addr}}/balance   - Get balance");
                 println!("   GET  /api/contracts               - List contracts");
                 println!("   POST /api/contracts               - Deploy contract");
-                println!("   POST /api/contracts/:addr/call    - Call contract");
+                println!("   POST /api/contracts/{{addr}}/call    - Call contract");
                 println!();
 
                 // Handle Ctrl+C

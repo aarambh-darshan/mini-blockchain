@@ -1,8 +1,11 @@
 <script lang="ts">
   import "../app.css";
   import { page } from "$app/stores";
+  import { onMount, onDestroy } from "svelte";
   import { Button } from "$lib/components/ui/button";
   import { Separator } from "$lib/components/ui/separator";
+  import ConnectionStatus from "$lib/components/ConnectionStatus.svelte";
+  import { connectWebSocket, disconnectWebSocket } from "$lib/websocket";
 
   const navItems = [
     { href: "/", label: "Dashboard", icon: "📊" },
@@ -12,6 +15,14 @@
     { href: "/contracts", label: "Contracts", icon: "📜" },
     { href: "/mempool", label: "Mempool", icon: "📬" },
   ];
+
+  onMount(() => {
+    connectWebSocket();
+  });
+
+  onDestroy(() => {
+    disconnectWebSocket();
+  });
 </script>
 
 <div class="dark min-h-screen bg-background text-foreground">
@@ -41,8 +52,7 @@
       </div>
       <div class="flex flex-1 items-center justify-end space-x-2">
         <Button variant="outline" size="sm" class="hidden md:flex">
-          <span class="text-green-500 mr-2">●</span>
-          Connected
+          <ConnectionStatus />
         </Button>
       </div>
     </div>

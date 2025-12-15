@@ -1,6 +1,7 @@
 //! REST API routes configuration
 
 use crate::api::handlers::{self, ApiState};
+use crate::api::websocket::ws_handler;
 use axum::{
     body::Body,
     http::{header, StatusCode},
@@ -77,32 +78,34 @@ pub fn create_router(state: ApiState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(handlers::health_check))
+        // WebSocket for real-time updates
+        .route("/ws", get(ws_handler))
         // Chain endpoints
         .route("/api/chain", get(handlers::get_chain_info))
         .route("/api/chain/blocks", get(handlers::get_blocks))
         .route(
-            "/api/chain/blocks/:height",
+            "/api/chain/blocks/{height}",
             get(handlers::get_block_by_height),
         )
         .route("/api/chain/validate", get(handlers::validate_chain))
         // Mining
         .route("/api/mine", post(handlers::mine_block))
         // Transactions
-        .route("/api/transactions/:id", get(handlers::get_transaction))
+        .route("/api/transactions/{id}", get(handlers::get_transaction))
         .route("/api/mempool", get(handlers::get_mempool))
         // Wallets
         .route("/api/wallets", get(handlers::list_wallets))
         .route("/api/wallets", post(handlers::create_wallet))
         .route(
-            "/api/wallets/:address/balance",
+            "/api/wallets/{address}/balance",
             get(handlers::get_wallet_balance),
         )
         // Contracts
         .route("/api/contracts", get(handlers::list_contracts))
         .route("/api/contracts", post(handlers::deploy_contract))
-        .route("/api/contracts/:address", get(handlers::get_contract))
+        .route("/api/contracts/{address}", get(handlers::get_contract))
         .route(
-            "/api/contracts/:address/call",
+            "/api/contracts/{address}/call",
             post(handlers::call_contract),
         )
         // Static files (Web UI)

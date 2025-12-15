@@ -21,9 +21,14 @@
 //! - `GET /api/wallets` - List wallets
 //! - `POST /api/wallets` - Create wallet
 //! - `GET /api/wallets/:address/balance` - Get balance
+//!
+//! ## WebSocket
+//! - `GET /ws` - Real-time updates (BlockMined, TransactionAdded, ChainUpdated)
 
 pub mod handlers;
 pub mod routes;
+pub mod websocket;
 
 pub use handlers::ApiState;
 pub use routes::create_router;
+pub use websocket::WsBroadcaster;
