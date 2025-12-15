@@ -8,6 +8,7 @@ use mini_blockchain::cli::{self, AppState};
 use mini_blockchain::contract::{Compiler, ContractManager};
 use mini_blockchain::core::Blockchain;
 use mini_blockchain::mining::Mempool;
+use mini_blockchain::multisig::MultisigManager;
 use mini_blockchain::network::{Node, NodeConfig};
 use mini_blockchain::storage::{Storage, StorageConfig};
 use mini_blockchain::wallet::WalletManager;
@@ -401,6 +402,9 @@ fn run_api_command(
                 // Create WebSocket broadcaster
                 let ws_broadcaster = Arc::new(WsBroadcaster::new());
 
+                // Create multisig manager
+                let multisig_manager = Arc::new(RwLock::new(MultisigManager::new()));
+
                 // Create API state
                 let state = ApiState {
                     blockchain,
@@ -409,6 +413,7 @@ fn run_api_command(
                     wallet_manager,
                     contract_manager,
                     ws_broadcaster,
+                    multisig_manager,
                 };
 
                 // Create router
@@ -434,6 +439,10 @@ fn run_api_command(
                 println!("   GET  /api/contracts               - List contracts");
                 println!("   POST /api/contracts               - Deploy contract");
                 println!("   POST /api/contracts/{{addr}}/call    - Call contract");
+                println!("   GET  /api/multisig                - List multisig wallets");
+                println!("   POST /api/multisig                - Create multisig wallet");
+                println!("   POST /api/multisig/{{addr}}/propose  - Propose transaction");
+                println!("   POST /api/multisig/{{addr}}/sign     - Sign transaction");
                 println!();
 
                 // Handle Ctrl+C

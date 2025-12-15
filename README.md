@@ -30,6 +30,7 @@
 | 💰 **UTXO Model** | Unspent Transaction Output tracking (Bitcoin-style) |
 | 🌳 **Merkle Trees** | Efficient transaction verification and integrity |
 | 👛 **Wallet System** | Key generation with Base58Check addresses |
+| ✍️ **Multi-Signature** | M-of-N threshold signatures for shared wallets |
 | 📬 **Transaction Pool** | Mempool for pending transactions |
 | 💾 **Persistence** | JSON storage with automatic backup rotation |
 | 🌐 **P2P Networking** | TCP-based peer discovery, block/tx gossip, chain sync |
@@ -192,6 +193,7 @@ The REST API server includes an embedded Web UI built with SvelteKit + shadcn-sv
 | Wallets | Create/list wallets, view balances |
 | Mining | Mine blocks with reward display |
 | Contracts | Deploy, list, and call contracts |
+| Multisig | Create M-of-N wallets, view pending transactions |
 | Mempool | View pending transactions |
 
 ```bash
@@ -242,6 +244,34 @@ blockchain contract deploy --file examples/add.asm
 # Call it with args
 blockchain contract call --address 0x... --args "10,25"
 # Returns: 35
+```
+
+### Multi-Signature Wallets
+
+Create wallets requiring M-of-N signatures to spend funds:
+
+```bash
+# Create a 2-of-3 multisig wallet via API
+curl -X POST http://localhost:3000/api/multisig \
+  -H "Content-Type: application/json" \
+  -d '{
+    "threshold": 2,
+    "signers": ["<pubkey1>", "<pubkey2>", "<pubkey3>"],
+    "label": "Team Treasury"
+  }'
+
+# Response includes the multisig address (starts with '3')
+# {"address": "3ABC...", "threshold": 2, "signer_count": 3, ...}
+
+# Propose a transaction
+curl -X POST http://localhost:3000/api/multisig/3ABC.../propose \
+  -H "Content-Type: application/json" \
+  -d '{"to": "1RECIPIENT...", "amount": 100}'
+
+# Sign with each authorized wallet (need M signatures)
+curl -X POST http://localhost:3000/api/multisig/3ABC.../sign \
+  -H "Content-Type: application/json" \
+  -d '{"tx_id": "TX_ID", "signer_pubkey": "<pubkey1>", "signature": "<sig1>"}'
 ```
 
 ---
@@ -404,10 +434,10 @@ Benchmarks on Intel i7 (single-threaded):
 - [x] Web UI (SvelteKit + shadcn-svelte)
 - [x] Contract deployment via Web UI
 - [x] WebSocket for real-time updates
+- [x] Multi-signature transactions
 
 ### 🔮 Future Ideas
 
-- [ ] Multi-signature transactions
 - [ ] Token standards (ERC-20 style)
 - [ ] Block explorer search
 - [ ] Mobile-responsive UI

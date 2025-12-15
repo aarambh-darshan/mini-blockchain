@@ -13,6 +13,7 @@
     { href: "/wallets", label: "Wallets", icon: "👛" },
     { href: "/mining", label: "Mining", icon: "⛏️" },
     { href: "/contracts", label: "Contracts", icon: "📜" },
+    { href: "/multisig", label: "Multisig", icon: "✍️" },
     { href: "/mempool", label: "Mempool", icon: "📬" },
   ];
 

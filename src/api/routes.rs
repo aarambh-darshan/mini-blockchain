@@ -108,6 +108,26 @@ pub fn create_router(state: ApiState) -> Router {
             "/api/contracts/{address}/call",
             post(handlers::call_contract),
         )
+        // Multisig
+        .route("/api/multisig", get(handlers::list_multisig))
+        .route("/api/multisig", post(handlers::create_multisig))
+        .route("/api/multisig/{address}", get(handlers::get_multisig))
+        .route(
+            "/api/multisig/{address}/balance",
+            get(handlers::get_multisig_balance),
+        )
+        .route(
+            "/api/multisig/{address}/propose",
+            post(handlers::propose_multisig_tx),
+        )
+        .route(
+            "/api/multisig/{address}/sign",
+            post(handlers::sign_multisig_tx),
+        )
+        .route(
+            "/api/multisig/{address}/pending",
+            get(handlers::list_pending_tx),
+        )
         // Static files (Web UI)
         .route("/", get(index_handler))
         .fallback(fallback_handler)

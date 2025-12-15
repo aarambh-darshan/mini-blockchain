@@ -4,6 +4,7 @@ use crate::api::websocket::WsBroadcaster;
 use crate::contract::{Compiler, ContractManager};
 use crate::core::{Blockchain, Transaction};
 use crate::mining::{Mempool, Miner};
+use crate::multisig::{MultisigConfig, MultisigManager, MultisigSignature};
 use crate::storage::Storage;
 use crate::wallet::WalletManager;
 use axum::{
@@ -24,6 +25,7 @@ pub struct ApiState {
     pub wallet_manager: Arc<RwLock<WalletManager>>,
     pub contract_manager: Arc<RwLock<ContractManager>>,
     pub ws_broadcaster: Arc<WsBroadcaster>,
+    pub multisig_manager: Arc<RwLock<MultisigManager>>,
 }
 
 // ============================================================================
@@ -539,4 +541,257 @@ pub async fn call_contract(
             }),
         )),
     }
+}
+
+// ============================================================================
+// Multisig Endpoints
+// ============================================================================
+
+/// Request to create a multisig wallet
+#[derive(Deserialize)]
+pub struct CreateMultisigRequest {
+    pub threshold: u8,
+    pub signers: Vec<String>,
+    pub label: Option<String>,
+}
+
+/// Multisig wallet info response
+#[derive(Serialize)]
+pub struct MultisigWalletInfo {
+    pub address: String,
+    pub threshold: u8,
+    pub signer_count: usize,
+    pub signers: Vec<String>,
+    pub label: Option<String>,
+    pub description: String,
+    pub created_at: String,
+}
+
+/// Pending transaction info response
+#[derive(Serialize)]
+pub struct PendingTxInfo {
+    pub id: String,
+    pub from_address: String,
+    pub to_address: String,
+    pub amount: u64,
+    pub signatures_collected: usize,
+    pub signatures_required: u8,
+    pub signed_by: Vec<String>,
+    pub status: String,
+    pub created_at: String,
+}
+
+/// Request to propose a transaction
+#[derive(Deserialize)]
+pub struct ProposeTransactionRequest {
+    pub to: String,
+    pub amount: u64,
+}
+
+/// Request to sign a pending transaction
+#[derive(Deserialize)]
+pub struct SignTransactionRequest {
+    pub tx_id: String,
+    pub signer_pubkey: String,
+    pub signature: String,
+}
+
+/// POST /api/multisig - Create a multisig wallet
+pub async fn create_multisig(
+    State(state): State<ApiState>,
+    Json(req): Json<CreateMultisigRequest>,
+) -> Result<Json<MultisigWalletInfo>, (StatusCode, Json<ApiError>)> {
+    let config = MultisigConfig::new(req.threshold, req.signers, req.label).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!("Invalid multisig config: {}", e),
+            }),
+        )
+    })?;
+
+    let mut manager = state.multisig_manager.write().await;
+    let wallet = manager.create_wallet(config).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("Failed to create multisig wallet: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(MultisigWalletInfo {
+        address: wallet.address.clone(),
+        threshold: wallet.config.threshold,
+        signer_count: wallet.config.signers.len(),
+        signers: wallet.config.signers.clone(),
+        label: wallet.config.label.clone(),
+        description: wallet.description(),
+        created_at: wallet.created_at.to_rfc3339(),
+    }))
+}
+
+/// GET /api/multisig - List all multisig wallets
+pub async fn list_multisig(State(state): State<ApiState>) -> Json<Vec<MultisigWalletInfo>> {
+    let manager = state.multisig_manager.read().await;
+    let wallets: Vec<MultisigWalletInfo> = manager
+        .list_wallets()
+        .iter()
+        .map(|w| MultisigWalletInfo {
+            address: w.address.clone(),
+            threshold: w.config.threshold,
+            signer_count: w.config.signers.len(),
+            signers: w.config.signers.clone(),
+            label: w.config.label.clone(),
+            description: w.description(),
+            created_at: w.created_at.to_rfc3339(),
+        })
+        .collect();
+
+    Json(wallets)
+}
+
+/// GET /api/multisig/{address} - Get multisig wallet details
+pub async fn get_multisig(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+) -> Result<Json<MultisigWalletInfo>, (StatusCode, Json<ApiError>)> {
+    let manager = state.multisig_manager.read().await;
+
+    match manager.get_wallet(&address) {
+        Some(wallet) => Ok(Json(MultisigWalletInfo {
+            address: wallet.address.clone(),
+            threshold: wallet.config.threshold,
+            signer_count: wallet.config.signers.len(),
+            signers: wallet.config.signers.clone(),
+            label: wallet.config.label.clone(),
+            description: wallet.description(),
+            created_at: wallet.created_at.to_rfc3339(),
+        })),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("Multisig wallet not found: {}", address),
+            }),
+        )),
+    }
+}
+
+/// GET /api/multisig/{address}/balance - Get multisig wallet balance
+pub async fn get_multisig_balance(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+) -> Result<Json<BalanceResponse>, (StatusCode, Json<ApiError>)> {
+    let manager = state.multisig_manager.read().await;
+    let blockchain = state.blockchain.read().await;
+
+    match manager.get_balance(&address, &blockchain) {
+        Some(balance) => {
+            let utxos = blockchain.get_utxos_for_address(&address);
+            Ok(Json(BalanceResponse {
+                address,
+                balance,
+                utxo_count: utxos.len(),
+            }))
+        }
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("Multisig wallet not found: {}", address),
+            }),
+        )),
+    }
+}
+
+/// POST /api/multisig/{address}/propose - Propose a transaction
+pub async fn propose_multisig_tx(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    Json(req): Json<ProposeTransactionRequest>,
+) -> Result<Json<PendingTxInfo>, (StatusCode, Json<ApiError>)> {
+    let blockchain = state.blockchain.read().await;
+    let mut manager = state.multisig_manager.write().await;
+
+    let pending = manager
+        .propose_transaction(&address, &req.to, req.amount, &blockchain)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("Failed to propose transaction: {}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(PendingTxInfo {
+        id: pending.id.clone(),
+        from_address: pending.from_address.clone(),
+        to_address: pending.to_address.clone(),
+        amount: pending.amount,
+        signatures_collected: pending.signature_count(),
+        signatures_required: pending.threshold,
+        signed_by: pending.signed_by().iter().map(|s| s.to_string()).collect(),
+        status: format!("{:?}", pending.status),
+        created_at: pending.created_at.to_rfc3339(),
+    }))
+}
+
+/// POST /api/multisig/{address}/sign - Sign a pending transaction
+pub async fn sign_multisig_tx(
+    State(state): State<ApiState>,
+    Path(_address): Path<String>,
+    Json(req): Json<SignTransactionRequest>,
+) -> Result<Json<PendingTxInfo>, (StatusCode, Json<ApiError>)> {
+    let mut manager = state.multisig_manager.write().await;
+
+    let signature = MultisigSignature::new(req.signer_pubkey, req.signature);
+
+    let pending = manager
+        .sign_transaction(&req.tx_id, signature)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("Failed to sign transaction: {}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(PendingTxInfo {
+        id: pending.id.clone(),
+        from_address: pending.from_address.clone(),
+        to_address: pending.to_address.clone(),
+        amount: pending.amount,
+        signatures_collected: pending.signature_count(),
+        signatures_required: pending.threshold,
+        signed_by: pending.signed_by().iter().map(|s| s.to_string()).collect(),
+        status: format!("{:?}", pending.status),
+        created_at: pending.created_at.to_rfc3339(),
+    }))
+}
+
+/// GET /api/multisig/{address}/pending - List pending transactions
+pub async fn list_pending_tx(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+) -> Json<Vec<PendingTxInfo>> {
+    let manager = state.multisig_manager.read().await;
+
+    let pending: Vec<PendingTxInfo> = manager
+        .pending_for_address(&address)
+        .iter()
+        .map(|p| PendingTxInfo {
+            id: p.id.clone(),
+            from_address: p.from_address.clone(),
+            to_address: p.to_address.clone(),
+            amount: p.amount,
+            signatures_collected: p.signature_count(),
+            signatures_required: p.threshold,
+            signed_by: p.signed_by().iter().map(|s| s.to_string()).collect(),
+            status: format!("{:?}", p.status),
+            created_at: p.created_at.to_rfc3339(),
+        })
+        .collect();
+
+    Json(pending)
 }

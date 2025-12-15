@@ -186,3 +186,108 @@ export async function callContract(address: string, args: number[], gasLimit?: n
     }
     return res.json();
 }
+
+// Multisig types
+export interface MultisigWalletInfo {
+    address: string;
+    threshold: number;
+    signer_count: number;
+    signers: string[];
+    label: string | null;
+    description: string;
+    created_at: string;
+}
+
+export interface PendingTxInfo {
+    id: string;
+    from_address: string;
+    to_address: string;
+    amount: number;
+    signatures_collected: number;
+    signatures_required: number;
+    signed_by: string[];
+    status: string;
+    created_at: string;
+}
+
+// Multisig endpoints
+export async function listMultisig(): Promise<MultisigWalletInfo[]> {
+    const res = await fetch(`${API_BASE}/multisig`);
+    return res.json();
+}
+
+export async function createMultisig(
+    threshold: number,
+    signers: string[],
+    label?: string
+): Promise<MultisigWalletInfo> {
+    const res = await fetch(`${API_BASE}/multisig`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold, signers, label })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Create multisig failed');
+    }
+    return res.json();
+}
+
+export async function getMultisig(address: string): Promise<MultisigWalletInfo> {
+    const res = await fetch(`${API_BASE}/multisig/${address}`);
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Multisig not found');
+    }
+    return res.json();
+}
+
+export async function getMultisigBalance(address: string): Promise<BalanceResponse> {
+    const res = await fetch(`${API_BASE}/multisig/${address}/balance`);
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Balance fetch failed');
+    }
+    return res.json();
+}
+
+export async function proposeMultisigTx(
+    address: string,
+    to: string,
+    amount: number
+): Promise<PendingTxInfo> {
+    const res = await fetch(`${API_BASE}/multisig/${address}/propose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to, amount })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Propose failed');
+    }
+    return res.json();
+}
+
+export async function signMultisigTx(
+    address: string,
+    txId: string,
+    signerPubkey: string,
+    signature: string
+): Promise<PendingTxInfo> {
+    const res = await fetch(`${API_BASE}/multisig/${address}/sign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tx_id: txId, signer_pubkey: signerPubkey, signature })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Sign failed');
+    }
+    return res.json();
+}
+
+export async function listPendingTx(address: string): Promise<PendingTxInfo[]> {
+    const res = await fetch(`${API_BASE}/multisig/${address}/pending`);
+    return res.json();
+}
+
