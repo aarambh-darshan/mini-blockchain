@@ -291,3 +291,132 @@ export async function listPendingTx(address: string): Promise<PendingTxInfo[]> {
     return res.json();
 }
 
+// Token types (ERC-20 style)
+export interface TokenInfo {
+    address: string;
+    name: string;
+    symbol: string;
+    decimals: number;
+    total_supply: string;
+    creator: string;
+    created_at_block: number;
+    holder_count: number;
+}
+
+export interface TokenBalanceResponse {
+    token: string;
+    holder: string;
+    balance: string;
+}
+
+export interface TransferResponse {
+    success: boolean;
+    from: string;
+    to: string;
+    amount: string;
+}
+
+// Token endpoints
+export async function listTokens(): Promise<TokenInfo[]> {
+    const res = await fetch(`${API_BASE}/tokens`);
+    return res.json();
+}
+
+export async function createToken(
+    name: string,
+    symbol: string,
+    decimals: number,
+    totalSupply: string,
+    creator: string
+): Promise<TokenInfo> {
+    const res = await fetch(`${API_BASE}/tokens`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            name,
+            symbol,
+            decimals,
+            total_supply: totalSupply,
+            creator
+        })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Create token failed');
+    }
+    return res.json();
+}
+
+export async function getToken(address: string): Promise<TokenInfo> {
+    const res = await fetch(`${API_BASE}/tokens/${address}`);
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Token not found');
+    }
+    return res.json();
+}
+
+export async function getTokenBalance(
+    tokenAddress: string,
+    holder: string
+): Promise<TokenBalanceResponse> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/balance/${holder}`);
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Balance fetch failed');
+    }
+    return res.json();
+}
+
+export async function transferTokens(
+    tokenAddress: string,
+    from: string,
+    to: string,
+    amount: string
+): Promise<TransferResponse> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/transfer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from, to, amount })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Transfer failed');
+    }
+    return res.json();
+}
+
+export async function approveToken(
+    tokenAddress: string,
+    owner: string,
+    spender: string,
+    amount: string
+): Promise<{ success: boolean }> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner, spender, amount })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Approve failed');
+    }
+    return res.json();
+}
+
+export async function getTokenAllowance(
+    tokenAddress: string,
+    owner: string,
+    spender: string
+): Promise<{ allowance: string }> {
+    const res = await fetch(
+        `${API_BASE}/tokens/${tokenAddress}/allowance?owner=${encodeURIComponent(owner)}&spender=${encodeURIComponent(spender)}`
+    );
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Allowance fetch failed');
+    }
+    return res.json();
+}
+
+
