@@ -84,33 +84,6 @@ RETURN
 
 ---
 
-## 4. Fibonacci Calculator
-Calculates the Nth Fibonacci number (iterative).
-*Note: This is more complex and shows control flow.*
-
-**Source Code:**
-```asm
-; Setup: F(0)=0, F(1)=1
-PUSH 0          ; a = 0
-PUSH 1          ; b = 1
-ARG 0           ; n (target index)
-
-; Loop counter
-:loop
-DUP             ; check if n is 0
-ISZERO
-JUMPI end       ; if n=0, we are done
-
-; Calculate next fib: temp = a + b
-SWAP            ; [n, a, b] -> [n, b, a]
-DUP             ; [n, b, a, a]
-PUSH 3          ; need to access 'b' which is at stack index 3?
-                ; NOTE: VM PUSH is simple. Let's use simple stack rotation
-                
-; ...Simpler Iterative Approach needed for stack machine...
-; Let's just do a simple max function instead to avoid complex stack juggling for now using SWAP/DUP
-```
-
 ## 4. Max Function (Control Flow)
 Returns the larger of two numbers.
 
