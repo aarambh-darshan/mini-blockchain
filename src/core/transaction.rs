@@ -173,6 +173,31 @@ pub enum TokenOperationType {
 }
 
 // =============================================================================
+// Contract Operations (On-Chain Smart Contracts)
+// =============================================================================
+
+/// Contract operation types that can be embedded in transactions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ContractOperationType {
+    /// Deploy a new smart contract
+    Deploy {
+        /// Contract bytecode
+        bytecode: Vec<u8>,
+        /// Constructor arguments
+        constructor_args: Vec<u64>,
+    },
+    /// Call a deployed contract
+    Call {
+        /// Contract address
+        contract_address: String,
+        /// Function arguments
+        args: Vec<u64>,
+        /// Gas limit for execution
+        gas_limit: Option<u64>,
+    },
+}
+
+// =============================================================================
 // Transaction
 // =============================================================================
 
@@ -207,6 +232,9 @@ pub struct Transaction {
     /// Optional token operation data (for on-chain ERC-20 style tokens)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_data: Option<TokenOperationType>,
+    /// Optional contract operation data (for on-chain smart contracts)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_data: Option<ContractOperationType>,
 }
 
 fn default_version() -> u32 {
@@ -231,6 +259,7 @@ impl Transaction {
             chain_id: DEFAULT_CHAIN_ID,
             fee: 0,
             token_data: None,
+            contract_data: None,
         };
         tx.id = tx.calculate_hash();
         tx
@@ -287,6 +316,7 @@ impl Transaction {
             chain_id: DEFAULT_CHAIN_ID,
             fee: 0,
             token_data: None,
+            contract_data: None,
         };
         tx.id = tx.calculate_hash();
         tx
@@ -312,6 +342,32 @@ impl Transaction {
             chain_id: DEFAULT_CHAIN_ID,
             fee: 0,
             token_data: Some(token_data),
+            contract_data: None,
+        };
+        tx.id = tx.calculate_hash();
+        tx
+    }
+
+    /// Create a contract operation transaction
+    ///
+    /// Contract transactions record deployments and calls on-chain.
+    pub fn with_contract_data(
+        inputs: Vec<TransactionInput>,
+        outputs: Vec<TransactionOutput>,
+        contract_data: ContractOperationType,
+    ) -> Self {
+        let mut tx = Self {
+            version: TX_VERSION,
+            id: String::new(),
+            inputs,
+            outputs,
+            timestamp: Utc::now(),
+            is_coinbase: false,
+            locktime: 0,
+            chain_id: DEFAULT_CHAIN_ID,
+            fee: 0,
+            token_data: None,
+            contract_data: Some(contract_data),
         };
         tx.id = tx.calculate_hash();
         tx
@@ -320,6 +376,11 @@ impl Transaction {
     /// Check if this is a token transaction
     pub fn is_token_transaction(&self) -> bool {
         self.token_data.is_some()
+    }
+
+    /// Check if this is a contract transaction
+    pub fn is_contract_transaction(&self) -> bool {
+        self.contract_data.is_some()
     }
 
     /// Get the sender address from the first input's public key
@@ -336,7 +397,7 @@ impl Transaction {
     /// Calculate the transaction hash (includes chain_id for replay protection)
     pub fn calculate_hash(&self) -> String {
         let data = format!(
-            "{}{:?}{:?}{}{}{}{}{:?}",
+            "{}{:?}{:?}{}{}{}{}{:?}{:?}",
             self.version,
             self.inputs,
             self.outputs,
@@ -344,22 +405,24 @@ impl Transaction {
             self.is_coinbase,
             self.locktime,
             self.chain_id,
-            self.token_data
+            self.token_data,
+            self.contract_data
         );
         hex::encode(sha256(data.as_bytes()))
     }
 
-    /// Get the data to be signed (includes chain_id and token_data for replay protection)
+    /// Get the data to be signed (includes chain_id, token_data, contract_data for replay protection)
     pub fn signing_data(&self) -> Vec<u8> {
         let data = format!(
-            "{}{:?}{:?}{}{}{}{:?}",
+            "{}{:?}{:?}{}{}{}{:?}{:?}",
             self.version,
             self.outputs,
             self.timestamp,
             self.is_coinbase,
             self.locktime,
             self.chain_id,
-            self.token_data
+            self.token_data,
+            self.contract_data
         );
         sha256(data.as_bytes())
     }
@@ -567,6 +630,13 @@ impl Transaction {
         if self.token_data.is_some() {
             // Token transactions just need valid token data - no signatures required
             // since the identity comes from the input's public_key field
+            return Ok(true);
+        }
+
+        // Contract transactions are allowed to have empty outputs
+        // (they record contract deployments and calls on-chain)
+        if self.contract_data.is_some() {
+            // Contract transactions just need valid contract data
             return Ok(true);
         }
 

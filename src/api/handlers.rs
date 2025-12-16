@@ -2,7 +2,10 @@
 
 use crate::api::websocket::WsBroadcaster;
 use crate::contract::{Compiler, ContractManager};
-use crate::core::{Blockchain, TokenOperationType, Transaction, TransactionInput, SEQUENCE_FINAL};
+use crate::core::{
+    Blockchain, ContractOperationType, TokenOperationType, Transaction, TransactionInput,
+    SEQUENCE_FINAL,
+};
 use crate::mining::{Mempool, Miner};
 use crate::multisig::{MultisigConfig, MultisigManager, MultisigSignature};
 use crate::storage::Storage;
@@ -498,10 +501,36 @@ pub async fn deploy_contract(
     let mut manager = state.contract_manager.write().await;
 
     match manager.deploy(bytecode.clone(), "web-deployer", chain.height()) {
-        Ok(address) => Ok(Json(DeployResponse {
-            address,
-            code_size: bytecode.len(),
-        })),
+        Ok(address) => {
+            drop(manager);
+            drop(chain);
+
+            // Create on-chain transaction to record the deployment
+            let contract_op = ContractOperationType::Deploy {
+                bytecode: bytecode.clone(),
+                constructor_args: vec![],
+            };
+
+            let input = TransactionInput {
+                tx_id: "contract_deploy".to_string(),
+                output_index: 0,
+                signature: String::new(),
+                public_key: "web-deployer".to_string(),
+                sequence: SEQUENCE_FINAL,
+            };
+
+            let tx = Transaction::with_contract_data(vec![input], vec![], contract_op);
+
+            // Add to mempool for on-chain recording
+            let mut mempool = state.mempool.write().await;
+            let _ = mempool.add_contract_transaction(tx);
+            drop(mempool);
+
+            Ok(Json(DeployResponse {
+                address,
+                code_size: bytecode.len(),
+            }))
+        }
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
@@ -576,6 +605,10 @@ pub async fn call_contract(
     let timestamp = chrono::Utc::now().timestamp() as u64;
     let height = chain.height();
 
+    // Clone args for on-chain transaction recording
+    let args_for_tx = req.args.clone();
+    let gas_limit_for_tx = req.gas_limit;
+
     match manager.call(
         &address,
         &caller_address,
@@ -647,6 +680,28 @@ pub async fn call_contract(
             } else {
                 new_balance = caller_balance.map(|b| b.saturating_sub(gas_cost));
             }
+
+            // Create on-chain transaction to record the contract call
+            let contract_op = ContractOperationType::Call {
+                contract_address: address.clone(),
+                args: args_for_tx,
+                gas_limit: gas_limit_for_tx,
+            };
+
+            let input = TransactionInput {
+                tx_id: "contract_call".to_string(),
+                output_index: 0,
+                signature: String::new(),
+                public_key: caller_address.clone(),
+                sequence: SEQUENCE_FINAL,
+            };
+
+            let tx = Transaction::with_contract_data(vec![input], vec![], contract_op);
+
+            // Add to mempool for on-chain recording
+            let mut mempool = state.mempool.write().await;
+            let _ = mempool.add_contract_transaction(tx);
+            drop(mempool);
 
             Ok(Json(CallResponse {
                 success: result.success,

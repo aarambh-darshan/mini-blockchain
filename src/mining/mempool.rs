@@ -399,10 +399,10 @@ impl Mempool {
     /// Token transactions don't spend UTXOs - they record token operations on-chain.
     /// This method allows adding them without requiring blockchain reference.
     pub fn add_token_transaction(&mut self, tx: Transaction) -> Result<(), MempoolError> {
-        // Only allow token transactions
-        if tx.token_data.is_none() {
+        // Only allow token or contract transactions
+        if tx.token_data.is_none() && tx.contract_data.is_none() {
             return Err(MempoolError::InvalidTransaction(
-                "Not a token transaction".to_string(),
+                "Not a token or contract transaction".to_string(),
             ));
         }
 
@@ -429,6 +429,13 @@ impl Mempool {
         self.entries.insert(tx_id, entry);
 
         Ok(())
+    }
+
+    /// Add a contract transaction to the pool (skips UTXO validation)
+    ///
+    /// Contract transactions record deployments and calls on-chain.
+    pub fn add_contract_transaction(&mut self, tx: Transaction) -> Result<(), MempoolError> {
+        self.add_token_transaction(tx) // Reuse the same logic
     }
 }
 
