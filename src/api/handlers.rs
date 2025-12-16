@@ -95,6 +95,7 @@ impl From<&Transaction> for TransactionResponse {
 #[derive(Serialize)]
 pub struct WalletResponse {
     pub address: String,
+    pub public_key: String,
     pub label: Option<String>,
 }
 
@@ -267,10 +268,17 @@ pub async fn mine_block(
     Json(req): Json<MineRequest>,
 ) -> Result<Json<MineResponse>, (StatusCode, Json<ApiError>)> {
     let mut chain = state.blockchain.write().await;
-    let mempool = state.mempool.read().await;
+
+    // Get transactions from mempool
+    let transactions = {
+        let mempool = state.mempool.read().await;
+        mempool.get_transactions(10)
+    };
+
+    // Collect tx IDs for cleanup after mining
+    let tx_ids: Vec<String> = transactions.iter().map(|t| t.id.clone()).collect();
 
     let miner = Miner::new(&req.miner_address);
-    let transactions = mempool.get_transactions(10);
 
     match miner.mine_block(&mut chain, transactions) {
         Ok((block, stats)) => {
@@ -288,6 +296,12 @@ pub async fn mine_block(
             let reward = block.mining_reward();
 
             drop(chain);
+
+            // Remove mined transactions from mempool
+            {
+                let mut mempool = state.mempool.write().await;
+                mempool.remove_transactions(&tx_ids);
+            }
 
             // Save blockchain
             let chain = state.blockchain.read().await;
@@ -376,6 +390,7 @@ pub async fn create_wallet(
     match manager.create_wallet(req.label.as_deref()) {
         Ok(wallet) => Ok(Json(WalletResponse {
             address: wallet.address(),
+            public_key: wallet.public_key(),
             label: req.label,
         })),
         Err(e) => Err((
@@ -397,9 +412,12 @@ pub async fn list_wallets(
         Ok(addresses) => {
             let wallets: Vec<WalletResponse> = addresses
                 .into_iter()
-                .map(|addr| WalletResponse {
-                    address: addr,
-                    label: None,
+                .filter_map(|addr| {
+                    manager.load_wallet(&addr).ok().map(|w| WalletResponse {
+                        address: addr,
+                        public_key: w.public_key(),
+                        label: w.label.clone(),
+                    })
                 })
                 .collect();
             Ok(Json(wallets))
@@ -874,6 +892,88 @@ pub async fn sign_multisig_tx(
     }))
 }
 
+/// Request to sign with a local wallet
+#[derive(Deserialize)]
+pub struct SignWithWalletRequest {
+    pub tx_id: String,
+    pub wallet_address: String,
+}
+
+/// POST /api/multisig/{address}/sign-with-wallet - Sign using a local wallet
+pub async fn sign_with_wallet(
+    State(state): State<ApiState>,
+    Path(_address): Path<String>,
+    Json(req): Json<SignWithWalletRequest>,
+) -> Result<Json<PendingTxInfo>, (StatusCode, Json<ApiError>)> {
+    // First, get the pending transaction to get its signing data
+    let signing_data = {
+        let manager = state.multisig_manager.read().await;
+        let pending = manager.get_pending(&req.tx_id).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Pending transaction not found: {}", req.tx_id),
+                }),
+            )
+        })?;
+        pending.signing_data()
+    };
+
+    // Load the wallet
+    let wallet_manager = state.wallet_manager.read().await;
+    let wallet = wallet_manager
+        .load_wallet(&req.wallet_address)
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Wallet not found: {}", e),
+                }),
+            )
+        })?;
+
+    // Sign the transaction's signing data (not a custom message)
+    let signature_bytes = wallet.sign_data(&signing_data).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("Failed to sign: {}", e),
+            }),
+        )
+    })?;
+    let signature_hex = hex::encode(signature_bytes);
+    let pubkey_hex = wallet.public_key();
+
+    drop(wallet_manager);
+
+    // Create multisig signature
+    let mut manager = state.multisig_manager.write().await;
+    let signature = MultisigSignature::new(pubkey_hex, signature_hex);
+
+    let pending = manager
+        .sign_transaction(&req.tx_id, signature)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("Failed to sign transaction: {}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(PendingTxInfo {
+        id: pending.id.clone(),
+        from_address: pending.from_address.clone(),
+        to_address: pending.to_address.clone(),
+        amount: pending.amount,
+        signatures_collected: pending.signature_count(),
+        signatures_required: pending.threshold,
+        signed_by: pending.signed_by().iter().map(|s| s.to_string()).collect(),
+        status: format!("{:?}", pending.status),
+        created_at: pending.created_at.to_rfc3339(),
+    }))
+}
+
 /// GET /api/multisig/{address}/pending - List pending transactions
 pub async fn list_pending_tx(
     State(state): State<ApiState>,
@@ -898,6 +998,89 @@ pub async fn list_pending_tx(
         .collect();
 
     Json(pending)
+}
+
+/// Request to broadcast a ready multisig transaction
+#[derive(Deserialize)]
+pub struct BroadcastRequest {
+    pub tx_id: String,
+}
+
+/// Response after broadcasting
+#[derive(Serialize)]
+pub struct BroadcastResponse {
+    pub tx_id: String,
+    pub status: String,
+    pub message: String,
+}
+
+/// POST /api/multisig/{address}/broadcast - Broadcast a ready transaction
+pub async fn broadcast_multisig_tx(
+    State(state): State<ApiState>,
+    Path(_address): Path<String>,
+    Json(req): Json<BroadcastRequest>,
+) -> Result<Json<BroadcastResponse>, (StatusCode, Json<ApiError>)> {
+    // Get the pending transaction
+    let mut manager = state.multisig_manager.write().await;
+
+    let pending = manager
+        .get_pending(&req.tx_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError {
+                    error: format!("Pending transaction not found: {}", req.tx_id),
+                }),
+            )
+        })?
+        .clone();
+
+    // Check if ready
+    if !pending.is_ready() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!(
+                    "Transaction not ready: has {}/{} signatures",
+                    pending.signature_count(),
+                    pending.threshold
+                ),
+            }),
+        ));
+    }
+
+    // Finalize into a real transaction
+    let transaction = pending.finalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                error: format!("Failed to finalize transaction: {}", e),
+            }),
+        )
+    })?;
+
+    let tx_id = transaction.id.clone();
+
+    // Add to mempool
+    {
+        let blockchain = state.blockchain.read().await;
+        let mut mempool = state.mempool.write().await;
+        if let Err(e) = mempool.add_transaction(transaction, &blockchain) {
+            log::warn!("Failed to add to mempool (may be already there): {}", e);
+        }
+    }
+
+    // Mark as broadcast and remove from pending
+    if let Some(p) = manager.get_pending_mut(&req.tx_id) {
+        p.mark_broadcast();
+    }
+    manager.remove_pending(&req.tx_id);
+
+    Ok(Json(BroadcastResponse {
+        tx_id,
+        status: "broadcast".to_string(),
+        message: "Transaction added to mempool. Mine a block to confirm it.".to_string(),
+    }))
 }
 
 // ============================================================================
@@ -1226,6 +1409,129 @@ pub async fn transfer_from_tokens(
     }))
 }
 
+/// Burn request
+#[derive(Deserialize)]
+pub struct TokenBurnRequest {
+    pub from: String,
+    pub amount: String,
+}
+
+/// POST /api/tokens/{address}/burn - Burn tokens
+pub async fn burn_tokens(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    Json(req): Json<TokenBurnRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let amount: u128 = req.amount.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid amount".to_string(),
+            }),
+        )
+    })?;
+
+    let mut manager = state.token_manager.write().await;
+
+    manager.burn(&address, &req.from, amount).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!("{}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "from": req.from,
+        "amount": amount.to_string(),
+        "action": "burned"
+    })))
+}
+
+/// Mint request
+#[derive(Deserialize)]
+pub struct TokenMintRequest {
+    pub caller: String,
+    pub to: String,
+    pub amount: String,
+}
+
+/// POST /api/tokens/{address}/mint - Mint new tokens
+pub async fn mint_tokens(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+    Json(req): Json<TokenMintRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let amount: u128 = req.amount.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: "Invalid amount".to_string(),
+            }),
+        )
+    })?;
+
+    let mut manager = state.token_manager.write().await;
+
+    manager
+        .mint(&address, &req.caller, &req.to, amount)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    error: format!("{}", e),
+                }),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "to": req.to,
+        "amount": amount.to_string(),
+        "action": "minted"
+    })))
+}
+
+/// Token transfer history entry
+#[derive(Serialize)]
+pub struct TokenHistoryEntry {
+    pub from: String,
+    pub to: String,
+    pub amount: String,
+    pub timestamp: String,
+}
+
+/// GET /api/tokens/{address}/history - Get transfer history
+pub async fn get_token_history(
+    State(state): State<ApiState>,
+    Path(address): Path<String>,
+) -> Result<Json<Vec<TokenHistoryEntry>>, (StatusCode, Json<ApiError>)> {
+    let manager = state.token_manager.read().await;
+
+    let history = manager.get_history(&address).map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("{}", e),
+            }),
+        )
+    })?;
+
+    let entries: Vec<TokenHistoryEntry> = history
+        .iter()
+        .map(|e| TokenHistoryEntry {
+            from: e.from.clone(),
+            to: e.to.clone(),
+            amount: e.amount.to_string(),
+            timestamp: e.timestamp.to_rfc3339(),
+        })
+        .collect();
+
+    Ok(Json(entries))
+}
+
 // ============================================================================
 // Search Endpoints
 // ============================================================================
@@ -1345,12 +1651,15 @@ pub async fn search(
         if let Ok(addresses) = manager.list_wallets() {
             for addr in addresses {
                 if addr.to_lowercase().contains(&q) {
-                    result.wallets.push(WalletResponse {
-                        address: addr,
-                        label: None,
-                    });
-                    if result.wallets.len() >= 10 {
-                        break;
+                    if let Ok(wallet) = manager.load_wallet(&addr) {
+                        result.wallets.push(WalletResponse {
+                            address: addr,
+                            public_key: wallet.public_key(),
+                            label: wallet.label.clone(),
+                        });
+                        if result.wallets.len() >= 10 {
+                            break;
+                        }
                     }
                 }
             }
@@ -1431,4 +1740,112 @@ pub async fn search(
     }
 
     Json(result)
+}
+
+// ============================================================================
+// Fee Estimation Endpoints
+// ============================================================================
+
+/// Fee estimate response
+#[derive(Serialize)]
+pub struct FeeEstimateResponse {
+    pub high_priority: u64,
+    pub normal: u64,
+    pub low_priority: u64,
+    pub economy: u64,
+    pub unit: String,
+}
+
+/// GET /api/fees - Get fee estimates
+pub async fn get_fee_estimates(State(state): State<ApiState>) -> Json<FeeEstimateResponse> {
+    let mempool = state.mempool.read().await;
+
+    // Simple fee estimation based on mempool size
+    let pending = mempool.len();
+    let base_fee = 1u64;
+
+    let (high, normal, low, economy) = match pending {
+        0..=10 => (base_fee * 2, base_fee, base_fee, base_fee),
+        11..=50 => (base_fee * 5, base_fee * 3, base_fee * 2, base_fee),
+        51..=200 => (base_fee * 10, base_fee * 5, base_fee * 3, base_fee * 2),
+        _ => (base_fee * 20, base_fee * 10, base_fee * 5, base_fee * 3),
+    };
+
+    Json(FeeEstimateResponse {
+        high_priority: high,
+        normal,
+        low_priority: low,
+        economy,
+        unit: "sat/byte".to_string(),
+    })
+}
+
+// ============================================================================
+// Stats Endpoints
+// ============================================================================
+
+/// Network stats response
+#[derive(Serialize)]
+pub struct NetworkStatsResponse {
+    pub protocol_version: u32,
+    pub min_protocol_version: u32,
+    pub peer_count: usize,
+    pub max_peers: usize,
+    pub banned_count: usize,
+}
+
+/// Storage stats response
+#[derive(Serialize)]
+pub struct StorageStatsResponse {
+    pub block_count: usize,
+    pub transaction_count: usize,
+    pub utxo_count: usize,
+    pub difficulty: u32,
+    pub chain_work: String,
+}
+
+/// Advanced chain stats response
+#[derive(Serialize)]
+pub struct AdvancedStatsResponse {
+    pub network: NetworkStatsResponse,
+    pub storage: StorageStatsResponse,
+    pub mempool_size: usize,
+    pub mempool_bytes: usize,
+}
+
+/// GET /api/stats - Get advanced blockchain stats
+pub async fn get_advanced_stats(State(state): State<ApiState>) -> Json<AdvancedStatsResponse> {
+    let chain = state.blockchain.read().await;
+    let mempool = state.mempool.read().await;
+
+    // Calculate transaction count
+    let tx_count: usize = chain.blocks.iter().map(|b| b.transactions.len()).sum();
+
+    // Get UTXO count
+    let utxo_count = chain.utxo_set.len();
+
+    // Estimate mempool size in bytes (rough estimate)
+    let mempool_bytes = mempool.len() * 300; // ~300 bytes per tx average
+
+    Json(AdvancedStatsResponse {
+        network: NetworkStatsResponse {
+            protocol_version: 70001,
+            min_protocol_version: 70000,
+            peer_count: 0, // Would need peer manager access
+            max_peers: 125,
+            banned_count: 0,
+        },
+        storage: StorageStatsResponse {
+            block_count: chain.blocks.len(),
+            transaction_count: tx_count,
+            utxo_count,
+            difficulty: chain.difficulty,
+            chain_work: format!(
+                "{}",
+                chain.blocks.len() as u128 * (1u128 << chain.difficulty)
+            ),
+        },
+        mempool_size: mempool.len(),
+        mempool_bytes,
+    })
 }

@@ -24,6 +24,7 @@ export interface BlockInfo {
 
 export interface WalletResponse {
     address: string;
+    public_key: string;
     label: string | null;
 }
 
@@ -306,6 +307,45 @@ export async function listPendingTx(address: string): Promise<PendingTxInfo[]> {
     return res.json();
 }
 
+export async function signWithWallet(
+    multisigAddress: string,
+    txId: string,
+    walletAddress: string
+): Promise<PendingTxInfo> {
+    const res = await fetch(`${API_BASE}/multisig/${multisigAddress}/sign-with-wallet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tx_id: txId, wallet_address: walletAddress })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Sign failed');
+    }
+    return res.json();
+}
+
+export interface BroadcastResponse {
+    tx_id: string;
+    status: string;
+    message: string;
+}
+
+export async function broadcastMultisigTx(
+    multisigAddress: string,
+    txId: string
+): Promise<BroadcastResponse> {
+    const res = await fetch(`${API_BASE}/multisig/${multisigAddress}/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tx_id: txId })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Broadcast failed');
+    }
+    return res.json();
+}
+
 // Token types (ERC-20 style)
 export interface TokenInfo {
     address: string;
@@ -434,6 +474,59 @@ export async function getTokenAllowance(
     return res.json();
 }
 
+export interface TokenHistoryEntry {
+    from: string;
+    to: string;
+    amount: string;
+    timestamp: string;
+}
+
+export async function burnTokens(
+    tokenAddress: string,
+    from: string,
+    amount: string
+): Promise<{ success: boolean }> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/burn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from, amount })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Burn failed');
+    }
+    return res.json();
+}
+
+export async function mintTokens(
+    tokenAddress: string,
+    caller: string,
+    to: string,
+    amount: string
+): Promise<{ success: boolean }> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/mint`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caller, to, amount })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Mint failed');
+    }
+    return res.json();
+}
+
+export async function getTokenHistory(
+    tokenAddress: string
+): Promise<TokenHistoryEntry[]> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/history`);
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'History fetch failed');
+    }
+    return res.json();
+}
+
 // Search types
 export interface SearchResult {
     query: string;
@@ -452,5 +545,50 @@ export async function search(query: string): Promise<SearchResult> {
         const error = await res.json();
         throw new Error(error.error || 'Search failed');
     }
+    return res.json();
+}
+
+// Fee estimation types
+export interface FeeEstimate {
+    high_priority: number;
+    normal: number;
+    low_priority: number;
+    economy: number;
+    unit: string;
+}
+
+// Advanced stats types
+export interface NetworkStats {
+    protocol_version: number;
+    min_protocol_version: number;
+    peer_count: number;
+    max_peers: number;
+    banned_count: number;
+}
+
+export interface StorageStats {
+    block_count: number;
+    transaction_count: number;
+    utxo_count: number;
+    difficulty: number;
+    chain_work: string;
+}
+
+export interface AdvancedStats {
+    network: NetworkStats;
+    storage: StorageStats;
+    mempool_size: number;
+    mempool_bytes: number;
+}
+
+// Fee estimation endpoint
+export async function getFeeEstimates(): Promise<FeeEstimate> {
+    const res = await fetch(`${API_BASE}/fees`);
+    return res.json();
+}
+
+// Advanced stats endpoint
+export async function getAdvancedStats(): Promise<AdvancedStats> {
+    const res = await fetch(`${API_BASE}/stats`);
     return res.json();
 }

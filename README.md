@@ -23,24 +23,53 @@
 
 ## ✨ Features
 
+### Core Blockchain
 | Feature | Description |
 |---------|-------------|
-| ⛏️ **Proof of Work** | SHA-256 based mining with dynamic difficulty adjustment |
+| ⛏️ **Proof of Work** | SHA-256 mining with dynamic difficulty adjustment |
 | 🔐 **ECDSA Signatures** | secp256k1 curve for secure transaction signing |
-| 💰 **UTXO Model** | Unspent Transaction Output tracking (Bitcoin-style) |
+| 💰 **UTXO Model** | Bitcoin-style with locktime, RBF, and chain ID |
 | 🌳 **Merkle Trees** | Efficient transaction verification and integrity |
+| 🔀 **Fork Resolution** | Longest chain rule with orphan block handling |
+| ⏱️ **MTP Validation** | Median Time Past for timestamp security |
+
+### Wallets & Transactions
+| Feature | Description |
+|---------|-------------|
 | 👛 **Wallet System** | Key generation with Base58Check addresses |
 | ✍️ **Multi-Signature** | M-of-N threshold signatures for shared wallets |
-| 🪙 **Token Standards** | ERC-20 style fungible tokens with transfers and approvals |
-| ⛽ **Gas System** | Real gas payments for smart contract execution |
-| 📬 **Transaction Pool** | Mempool for pending transactions |
-| 💾 **Persistence** | JSON storage with automatic backup rotation |
-| 🌐 **P2P Networking** | TCP-based peer discovery, block/tx gossip, chain sync |
-| 🚀 **REST API** | HTTP API with Axum for programmatic access |
-| 🔌 **WebSocket** | Real-time updates for blocks, transactions, and chain state |
-| 📜 **Smart Contracts** | Stack-based VM with custom bytecode and storage |
-| 🌐 **Web UI** | SvelteKit + shadcn-svelte dashboard (embedded in binary) |
-| 🖥️ **Full CLI** | Complete command-line interface |
+| 🔄 **Replace-By-Fee** | BIP-125 transaction replacement |
+| ⏳ **Locktime** | BIP-65 time-locked transactions |
+| 🛡️ **Replay Protection** | EIP-155 style chain ID |
+
+### Network & Security
+| Feature | Description |
+|---------|-------------|
+| 🌐 **P2P Networking** | Protocol v70001 with version handshake |
+| 🚫 **Peer Scoring** | Misbehavior detection and banning |
+| 🛑 **Rate Limiting** | DOS protection (1000 msg/min) |
+| 📦 **Compact Blocks** | BIP-152 style efficient relay |
+
+### Storage & Performance
+| Feature | Description |
+|---------|-------------|
+| 📇 **Block Indexing** | Fast lookups by hash, height, address |
+| 💾 **UTXO Cache** | LRU cache with 100K entries |
+| ✅ **Checkpoints** | Fast sync for known-good blocks |
+| 🗑️ **Pruning** | Configurable block retention |
+
+### Advanced Features
+| Feature | Description |
+|---------|-------------|
+| 🔍 **SPV Support** | Bloom filters (BIP-37) for light clients |
+| 💵 **Fee Estimation** | Smart fee calculation (high/normal/low) |
+| 🗜️ **Compression** | Delta encoding for efficient storage |
+| 🪙 **Token Standards** | ERC-20 style fungible tokens |
+| ⛽ **Gas System** | Real gas payments for contracts |
+| 📜 **Smart Contracts** | Stack-based VM with bytecode |
+| 🌐 **Web UI** | SvelteKit + shadcn-svelte dashboard |
+| 🚀 **REST API** | HTTP API with Axum |
+| 🔌 **WebSocket** | Real-time updates |
 
 ---
 

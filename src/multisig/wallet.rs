@@ -107,9 +107,35 @@ impl MultisigConfig {
         self.signers.len()
     }
 
-    /// Check if a public key is an authorized signer
+    /// Check if a public key or wallet address is an authorized signer
+    ///
+    /// Signers can be registered as either addresses or public keys.
+    /// This method accepts a public key and its corresponding address to check both.
     pub fn is_signer(&self, pubkey: &str) -> bool {
         self.signers.iter().any(|s| s == pubkey)
+    }
+
+    /// Check if authorized by pubkey - also derives address from pubkey and checks that
+    pub fn is_signer_with_address_check(&self, pubkey: &str) -> bool {
+        // First check direct pubkey match
+        if self.signers.iter().any(|s| s == pubkey) {
+            return true;
+        }
+
+        // Try to derive address from pubkey and check that
+        if let Ok(pk) = crate::crypto::public_key_from_hex(pubkey) {
+            let address = crate::crypto::public_key_to_address(&pk);
+            if self.signers.iter().any(|s| s == &address) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if authorized by either pubkey or address
+    pub fn is_authorized(&self, pubkey: &str, address: &str) -> bool {
+        self.signers.iter().any(|s| s == pubkey || s == address)
     }
 
     /// Get description like "2-of-3"
@@ -190,9 +216,9 @@ impl MultisigWallet {
         &self.config
     }
 
-    /// Check if a public key is an authorized signer
+    /// Check if a public key is an authorized signer (also checks derived address)
     pub fn is_signer(&self, pubkey: &str) -> bool {
-        self.config.is_signer(pubkey)
+        self.config.is_signer_with_address_check(pubkey)
     }
 
     /// Get the required threshold

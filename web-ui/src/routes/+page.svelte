@@ -3,8 +3,12 @@
     import {
         getChainInfo,
         getBlocks,
+        getFeeEstimates,
+        getAdvancedStats,
         type ChainInfo,
         type BlockInfo,
+        type FeeEstimate,
+        type AdvancedStats,
     } from "$lib/api";
     import { latestEvent, type WsEvent } from "$lib/websocket";
     import * as Card from "$lib/components/ui/card";
@@ -14,6 +18,8 @@
 
     let chainInfo = $state<ChainInfo | null>(null);
     let recentBlocks = $state<BlockInfo[]>([]);
+    let feeEstimates = $state<FeeEstimate | null>(null);
+    let advancedStats = $state<AdvancedStats | null>(null);
     let loading = $state(true);
     let error = $state("");
     let lastUpdate = $state<Date | null>(null);
@@ -44,9 +50,11 @@
 
     onMount(async () => {
         try {
-            [chainInfo, recentBlocks] = await Promise.all([
+            [chainInfo, recentBlocks, feeEstimates, advancedStats] = await Promise.all([
                 getChainInfo(),
                 getBlocks(),
+                getFeeEstimates(),
+                getAdvancedStats(),
             ]);
         } catch (e) {
             error = "Failed to connect to blockchain API.";
@@ -162,6 +170,67 @@
                     </p>
                 </Card.Content>
             </Card.Root>
+        </div>
+
+        <!-- Fee Estimates & Storage Stats -->
+        <div class="grid gap-4 md:grid-cols-2">
+            {#if feeEstimates}
+            <Card.Root>
+                <Card.Header>
+                    <Card.Title>💵 Fee Estimates</Card.Title>
+                    <Card.Description>Recommended fees ({feeEstimates.unit})</Card.Description>
+                </Card.Header>
+                <Card.Content>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">High Priority</p>
+                            <p class="text-lg font-semibold text-green-500">{feeEstimates.high_priority}</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">Normal</p>
+                            <p class="text-lg font-semibold text-blue-500">{feeEstimates.normal}</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">Low Priority</p>
+                            <p class="text-lg font-semibold text-yellow-500">{feeEstimates.low_priority}</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">Economy</p>
+                            <p class="text-lg font-semibold text-gray-500">{feeEstimates.economy}</p>
+                        </div>
+                    </div>
+                </Card.Content>
+            </Card.Root>
+            {/if}
+
+            {#if advancedStats}
+            <Card.Root>
+                <Card.Header>
+                    <Card.Title>📊 Storage Stats</Card.Title>
+                    <Card.Description>UTXO and chain data</Card.Description>
+                </Card.Header>
+                <Card.Content>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">UTXO Set Size</p>
+                            <p class="text-lg font-semibold">{advancedStats.storage.utxo_count}</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">Mempool</p>
+                            <p class="text-lg font-semibold">{advancedStats.mempool_size} tx</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">Protocol</p>
+                            <p class="text-lg font-semibold">v{advancedStats.network.protocol_version}</p>
+                        </div>
+                        <div class="space-y-1">
+                            <p class="text-xs text-muted-foreground">Chain Work</p>
+                            <p class="text-sm font-mono truncate">{advancedStats.storage.chain_work.slice(0, 12)}...</p>
+                        </div>
+                    </div>
+                </Card.Content>
+            </Card.Root>
+            {/if}
         </div>
 
         <!-- Latest Hash -->

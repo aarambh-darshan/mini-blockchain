@@ -189,6 +189,24 @@ impl Node {
         log::debug!("Received {} from {}", msg.type_name(), from);
 
         match msg {
+            Message::Version(version) => {
+                // Handle version message (new protocol)
+                if let Err(e) = self.peer_manager.update_peer_version(&from, &version).await {
+                    log::warn!("Version incompatible from {}: {}", from, e);
+                    return;
+                }
+                // Send VerAck
+                if let Err(e) = self.peer_manager.send_to(&from, Message::VerAck).await {
+                    log::warn!("Failed to send VerAck to {}: {}", from, e);
+                }
+                // Check if we need to sync
+                self.chain_sync.check_sync().await;
+            }
+
+            Message::VerAck => {
+                log::debug!("Received VerAck from {}", from);
+            }
+
             Message::Handshake(handshake) => {
                 self.peer_manager.update_peer(&from, &handshake).await;
 
@@ -248,6 +266,24 @@ impl Node {
                 }
             }
 
+            Message::GetHeaders {
+                start_height,
+                count,
+            } => {
+                // TODO: Implement headers-first sync
+                log::debug!(
+                    "GetHeaders from {}: start={}, count={}",
+                    from,
+                    start_height,
+                    count
+                );
+            }
+
+            Message::Headers(_headers) => {
+                // TODO: Implement headers-first sync
+                log::debug!("Received headers from {}", from);
+            }
+
             Message::GetPeers => {
                 let peers = self.peer_manager.get_known_peers().await;
                 if let Err(e) = self
@@ -289,6 +325,74 @@ impl Node {
 
             Message::Height(_) => {
                 // Used for sync checking
+            }
+
+            Message::Inv(items) => {
+                // Handle inventory announcements
+                log::debug!("Received {} inventory items from {}", items.len(), from);
+                // TODO: Request missing items via GetData
+            }
+
+            Message::GetData(items) => {
+                // Handle data requests
+                log::debug!("GetData request for {} items from {}", items.len(), from);
+                // TODO: Send requested blocks/transactions
+            }
+
+            Message::NotFound(_items) => {
+                log::debug!("NotFound from {}", from);
+            }
+
+            Message::Reject(reject) => {
+                log::warn!(
+                    "Reject from {}: {} - {:?} - {}",
+                    from,
+                    reject.message,
+                    reject.code,
+                    reject.reason
+                );
+            }
+
+            Message::CompactBlock(_) => {
+                // TODO: Implement compact block relay
+                log::debug!("Received compact block from {}", from);
+            }
+
+            Message::GetBlockTxn {
+                block_hash,
+                indexes,
+            } => {
+                log::debug!(
+                    "GetBlockTxn for {} txs in {} from {}",
+                    indexes.len(),
+                    block_hash,
+                    from
+                );
+            }
+
+            Message::BlockTxn {
+                block_hash,
+                transactions,
+            } => {
+                log::debug!(
+                    "BlockTxn with {} txs for {} from {}",
+                    transactions.len(),
+                    block_hash,
+                    from
+                );
+            }
+
+            Message::FeeFilter(min_fee) => {
+                log::debug!("FeeFilter {} from {}", min_fee, from);
+            }
+
+            Message::SendCmpct { enable, version } => {
+                log::debug!(
+                    "SendCmpct enable={} version={} from {}",
+                    enable,
+                    version,
+                    from
+                );
             }
         }
     }

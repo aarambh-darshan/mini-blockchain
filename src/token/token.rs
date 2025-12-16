@@ -113,6 +113,24 @@ pub struct ApprovalEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Burn event (emitted when tokens are burned)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BurnEvent {
+    pub token: String,
+    pub from: String,
+    pub amount: u128,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Mint event (emitted when tokens are minted)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MintEvent {
+    pub token: String,
+    pub to: String,
+    pub amount: u128,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// An ERC-20 style fungible token
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Token {
@@ -126,14 +144,27 @@ pub struct Token {
     allowances: HashMap<String, HashMap<String, u128>>,
     /// Transfer history (last 100)
     pub transfer_history: Vec<TransferEvent>,
+    /// Current circulating supply (can change with burn/mint)
+    pub current_supply: u128,
+    /// Whether minting is enabled
+    pub is_mintable: bool,
+    /// Address allowed to mint (usually creator)
+    pub minter: String,
 }
 
 impl Token {
     /// Create a new token with all supply allocated to creator
     pub fn new(address: String, metadata: TokenMetadata) -> Self {
+        Self::new_with_options(address, metadata, true)
+    }
+
+    /// Create a new token with mintable option
+    pub fn new_with_options(address: String, metadata: TokenMetadata, is_mintable: bool) -> Self {
         let mut balances = HashMap::new();
+        let creator = metadata.creator.clone();
+        let total_supply = metadata.total_supply;
         // All tokens initially belong to creator
-        balances.insert(metadata.creator.clone(), metadata.total_supply);
+        balances.insert(creator.clone(), total_supply);
 
         Self {
             address,
@@ -141,6 +172,9 @@ impl Token {
             balances,
             allowances: HashMap::new(),
             transfer_history: Vec::new(),
+            current_supply: total_supply,
+            is_mintable,
+            minter: creator,
         }
     }
 
@@ -339,6 +373,115 @@ impl Token {
         }
 
         Ok(event)
+    }
+
+    // =========================================================================
+    // Burn & Mint Functions
+    // =========================================================================
+
+    /// Burn tokens from an address (reduces circulating supply)
+    ///
+    /// # Arguments
+    /// * `from` - Address burning tokens
+    /// * `amount` - Amount to burn
+    pub fn burn(&mut self, from: &str, amount: u128) -> Result<BurnEvent, TokenError> {
+        if amount == 0 {
+            return Err(TokenError::InvalidAmount);
+        }
+
+        let balance = self.balance_of(from);
+        if balance < amount {
+            return Err(TokenError::InsufficientBalance {
+                have: balance,
+                need: amount,
+            });
+        }
+
+        // Reduce balance
+        *self.balances.entry(from.to_string()).or_insert(0) -= amount;
+
+        // Reduce circulating supply
+        self.current_supply -= amount;
+
+        // Create event
+        let event = BurnEvent {
+            token: self.address.clone(),
+            from: from.to_string(),
+            amount,
+            timestamp: Utc::now(),
+        };
+
+        // Record as transfer to zero address in history
+        self.transfer_history.push(TransferEvent {
+            token: self.address.clone(),
+            from: from.to_string(),
+            to: "0x0000000000000000000000000000000000000000".to_string(),
+            amount,
+            timestamp: Utc::now(),
+        });
+        if self.transfer_history.len() > 100 {
+            self.transfer_history.remove(0);
+        }
+
+        Ok(event)
+    }
+
+    /// Mint new tokens to an address (only minter can call)
+    ///
+    /// # Arguments
+    /// * `caller` - Address calling mint (must be minter)
+    /// * `to` - Address to receive tokens
+    /// * `amount` - Amount to mint
+    pub fn mint(&mut self, caller: &str, to: &str, amount: u128) -> Result<MintEvent, TokenError> {
+        if amount == 0 {
+            return Err(TokenError::InvalidAmount);
+        }
+
+        if !self.is_mintable {
+            return Err(TokenError::InvalidAmount); // Could add specific error
+        }
+
+        if caller != self.minter {
+            return Err(TokenError::InsufficientAllowance { have: 0, need: 1 }); // Not authorized
+        }
+
+        // Add to recipient's balance
+        *self.balances.entry(to.to_string()).or_insert(0) += amount;
+
+        // Increase circulating supply
+        self.current_supply += amount;
+
+        // Create event
+        let event = MintEvent {
+            token: self.address.clone(),
+            to: to.to_string(),
+            amount,
+            timestamp: Utc::now(),
+        };
+
+        // Record as transfer from zero address in history
+        self.transfer_history.push(TransferEvent {
+            token: self.address.clone(),
+            from: "0x0000000000000000000000000000000000000000".to_string(),
+            to: to.to_string(),
+            amount,
+            timestamp: Utc::now(),
+        });
+        if self.transfer_history.len() > 100 {
+            self.transfer_history.remove(0);
+        }
+
+        Ok(event)
+    }
+
+    /// Get minter address
+    pub fn minter(&self) -> &str {
+        &self.minter
+    }
+
+    /// Get current circulating supply
+    pub fn circulating_supply(&self) -> u128 {
+        self.current_supply
     }
 }
 
