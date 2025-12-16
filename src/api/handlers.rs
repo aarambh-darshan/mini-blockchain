@@ -2,7 +2,7 @@
 
 use crate::api::websocket::WsBroadcaster;
 use crate::contract::{Compiler, ContractManager};
-use crate::core::{Blockchain, Transaction};
+use crate::core::{Blockchain, TokenOperationType, Transaction, TransactionInput, SEQUENCE_FINAL};
 use crate::mining::{Mempool, Miner};
 use crate::multisig::{MultisigConfig, MultisigManager, MultisigSignature};
 use crate::storage::Storage;
@@ -1095,6 +1095,7 @@ pub struct CreateTokenRequest {
     pub decimals: u8,
     pub total_supply: String,
     pub creator: String,
+    pub is_mintable: Option<bool>,
 }
 
 /// Token info response
@@ -1105,9 +1106,12 @@ pub struct TokenInfo {
     pub symbol: String,
     pub decimals: u8,
     pub total_supply: String,
+    pub current_supply: String,
     pub creator: String,
     pub created_at_block: u64,
     pub holder_count: usize,
+    pub is_mintable: bool,
+    pub minter: String,
 }
 
 /// Token balance response
@@ -1159,7 +1163,10 @@ pub struct TransferResponse {
     pub amount: String,
 }
 
-/// POST /api/tokens - Create a new token
+/// POST /api/tokens - Create a new token (on-chain)
+///
+/// Creates a token and records the creation as a transaction on the blockchain.
+/// The transaction is added to the mempool and will be included in the next mined block.
 pub async fn create_token(
     State(state): State<ApiState>,
     Json(req): Json<CreateTokenRequest>,
@@ -1173,17 +1180,21 @@ pub async fn create_token(
         )
     })?;
 
+    // Create the token in the manager
     let blockchain = state.blockchain.read().await;
+    let current_height = blockchain.height();
+    drop(blockchain);
+
     let mut manager = state.token_manager.write().await;
 
     let token = manager
         .create_token(
-            req.name,
-            req.symbol,
+            req.name.clone(),
+            req.symbol.clone(),
             req.decimals,
             total_supply,
             &req.creator,
-            blockchain.height(),
+            current_height,
         )
         .map_err(|e| {
             (
@@ -1194,15 +1205,44 @@ pub async fn create_token(
             )
         })?;
 
+    // Create on-chain transaction to record the token creation
+    let token_op = TokenOperationType::Create {
+        name: req.name.clone(),
+        symbol: req.symbol.clone(),
+        decimals: req.decimals,
+        total_supply,
+        is_mintable: req.is_mintable.unwrap_or(false),
+    };
+
+    // Create a transaction with token data (no inputs needed for token creation)
+    // The creator's address is embedded in the transaction input for identity
+    let input = TransactionInput {
+        tx_id: "token_create".to_string(),
+        output_index: 0,
+        signature: String::new(),
+        public_key: req.creator.clone(), // Creator's identity
+        sequence: SEQUENCE_FINAL,
+    };
+
+    let tx = Transaction::with_token_data(vec![input], vec![], token_op);
+
+    // Add to mempool for on-chain recording
+    let mut mempool = state.mempool.write().await;
+    let _ = mempool.add_token_transaction(tx.clone());
+    drop(mempool);
+
     Ok(Json(TokenInfo {
         address: token.address.clone(),
         name: token.name().to_string(),
         symbol: token.symbol().to_string(),
         decimals: token.decimals(),
         total_supply: token.total_supply().to_string(),
+        current_supply: token.circulating_supply().to_string(),
         creator: token.metadata.creator.clone(),
         created_at_block: token.metadata.created_at_block,
         holder_count: token.holder_count(),
+        is_mintable: token.is_mintable,
+        minter: token.minter.clone(),
     }))
 }
 
@@ -1219,9 +1259,12 @@ pub async fn list_tokens(State(state): State<ApiState>) -> Json<Vec<TokenInfo>> 
             symbol: t.symbol().to_string(),
             decimals: t.decimals(),
             total_supply: t.total_supply().to_string(),
+            current_supply: t.circulating_supply().to_string(),
             creator: t.metadata.creator.clone(),
             created_at_block: t.metadata.created_at_block,
             holder_count: t.holder_count(),
+            is_mintable: t.is_mintable,
+            minter: t.minter.clone(),
         })
         .collect();
 
@@ -1242,9 +1285,12 @@ pub async fn get_token(
             symbol: token.symbol().to_string(),
             decimals: token.decimals(),
             total_supply: token.total_supply().to_string(),
+            current_supply: token.circulating_supply().to_string(),
             creator: token.metadata.creator.clone(),
             created_at_block: token.metadata.created_at_block,
             holder_count: token.holder_count(),
+            is_mintable: token.is_mintable,
+            minter: token.minter.clone(),
         })),
         None => Err((
             StatusCode::NOT_FOUND,
@@ -1305,6 +1351,28 @@ pub async fn transfer_tokens(
             )
         })?;
 
+    // Create on-chain transaction to record the transfer
+    let token_op = TokenOperationType::Transfer {
+        token_address: address.clone(),
+        to: req.to.clone(),
+        amount,
+    };
+
+    let input = TransactionInput {
+        tx_id: "token_transfer".to_string(),
+        output_index: 0,
+        signature: String::new(),
+        public_key: req.from.clone(), // Sender's identity
+        sequence: SEQUENCE_FINAL,
+    };
+
+    let tx = Transaction::with_token_data(vec![input], vec![], token_op);
+
+    // Add to mempool for on-chain recording
+    let mut mempool = state.mempool.write().await;
+    let _ = mempool.add_token_transaction(tx);
+    drop(mempool);
+
     Ok(Json(TransferResponse {
         success: true,
         from: req.from,
@@ -1340,6 +1408,27 @@ pub async fn approve_tokens(
                 }),
             )
         })?;
+
+    // Create on-chain transaction to record the approval
+    let token_op = TokenOperationType::Approve {
+        token_address: address.clone(),
+        spender: req.spender.clone(),
+        amount,
+    };
+
+    let input = TransactionInput {
+        tx_id: "token_approve".to_string(),
+        output_index: 0,
+        signature: String::new(),
+        public_key: req.owner.clone(),
+        sequence: SEQUENCE_FINAL,
+    };
+
+    let tx = Transaction::with_token_data(vec![input], vec![], token_op);
+
+    let mut mempool = state.mempool.write().await;
+    let _ = mempool.add_token_transaction(tx);
+    drop(mempool);
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -1401,6 +1490,28 @@ pub async fn transfer_from_tokens(
             )
         })?;
 
+    // Create on-chain transaction to record the transfer_from
+    let token_op = TokenOperationType::TransferFrom {
+        token_address: address.clone(),
+        from: req.from.clone(),
+        to: req.to.clone(),
+        amount,
+    };
+
+    let input = TransactionInput {
+        tx_id: "token_transfer_from".to_string(),
+        output_index: 0,
+        signature: String::new(),
+        public_key: req.spender.clone(), // Spender is the one executing
+        sequence: SEQUENCE_FINAL,
+    };
+
+    let tx = Transaction::with_token_data(vec![input], vec![], token_op);
+
+    let mut mempool = state.mempool.write().await;
+    let _ = mempool.add_token_transaction(tx);
+    drop(mempool);
+
     Ok(Json(TransferResponse {
         success: true,
         from: req.from,
@@ -1441,6 +1552,26 @@ pub async fn burn_tokens(
             }),
         )
     })?;
+
+    // Create on-chain transaction to record the burn
+    let token_op = TokenOperationType::Burn {
+        token_address: address.clone(),
+        amount,
+    };
+
+    let input = TransactionInput {
+        tx_id: "token_burn".to_string(),
+        output_index: 0,
+        signature: String::new(),
+        public_key: req.from.clone(),
+        sequence: SEQUENCE_FINAL,
+    };
+
+    let tx = Transaction::with_token_data(vec![input], vec![], token_op);
+
+    let mut mempool = state.mempool.write().await;
+    let _ = mempool.add_token_transaction(tx);
+    drop(mempool);
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -1485,6 +1616,27 @@ pub async fn mint_tokens(
                 }),
             )
         })?;
+
+    // Create on-chain transaction to record the mint
+    let token_op = TokenOperationType::Mint {
+        token_address: address.clone(),
+        to: req.to.clone(),
+        amount,
+    };
+
+    let input = TransactionInput {
+        tx_id: "token_mint".to_string(),
+        output_index: 0,
+        signature: String::new(),
+        public_key: req.caller.clone(), // Minter's identity
+        sequence: SEQUENCE_FINAL,
+    };
+
+    let tx = Transaction::with_token_data(vec![input], vec![], token_op);
+
+    let mut mempool = state.mempool.write().await;
+    let _ = mempool.add_token_transaction(tx);
+    drop(mempool);
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -1700,9 +1852,12 @@ pub async fn search(
                     symbol: token.symbol().to_string(),
                     decimals: token.decimals(),
                     total_supply: token.total_supply().to_string(),
+                    current_supply: token.circulating_supply().to_string(),
                     creator: token.metadata.creator.clone(),
                     created_at_block: token.metadata.created_at_block,
                     holder_count: token.holder_count(),
+                    is_mintable: token.is_mintable,
+                    minter: token.minter.clone(),
                 });
                 if result.tokens.len() >= 10 {
                     break;

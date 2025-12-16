@@ -30,6 +30,7 @@ pub use compression::{BlockCompressor, CompressedBlock, CompressionStats};
 pub use fee::{BlockFeeStats, FeeEstimates, FeeEstimator, FeeRate, Priority};
 pub use spv::{BloomFilter, MerkleProof, SpvClient};
 pub use transaction::{
-    Transaction, TransactionBuilder, TransactionError, TransactionInput, TransactionOutput,
-    DEFAULT_CHAIN_ID, LOCKTIME_THRESHOLD, SEQUENCE_FINAL, SEQUENCE_RBF_MAX, TX_VERSION, UTXO,
+    TokenOperationType, Transaction, TransactionBuilder, TransactionError, TransactionInput,
+    TransactionOutput, DEFAULT_CHAIN_ID, LOCKTIME_THRESHOLD, SEQUENCE_FINAL, SEQUENCE_RBF_MAX,
+    TX_VERSION, UTXO,
 };

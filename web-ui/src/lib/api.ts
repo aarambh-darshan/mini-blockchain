@@ -353,9 +353,12 @@ export interface TokenInfo {
     symbol: string;
     decimals: number;
     total_supply: string;
+    current_supply: string;
     creator: string;
     created_at_block: number;
     holder_count: number;
+    is_mintable: boolean;
+    minter: string;
 }
 
 export interface TokenBalanceResponse {
@@ -382,7 +385,8 @@ export async function createToken(
     symbol: string,
     decimals: number,
     totalSupply: string,
-    creator: string
+    creator: string,
+    isMintable: boolean = false
 ): Promise<TokenInfo> {
     const res = await fetch(`${API_BASE}/tokens`, {
         method: 'POST',
@@ -392,7 +396,8 @@ export async function createToken(
             symbol,
             decimals,
             total_supply: totalSupply,
-            creator
+            creator,
+            is_mintable: isMintable
         })
     });
     if (!res.ok) {
@@ -523,6 +528,25 @@ export async function getTokenHistory(
     if (!res.ok) {
         const error = await res.json();
         throw new Error(error.error || 'History fetch failed');
+    }
+    return res.json();
+}
+
+export async function transferFromTokens(
+    tokenAddress: string,
+    spender: string,
+    from: string,
+    to: string,
+    amount: string
+): Promise<TransferResponse> {
+    const res = await fetch(`${API_BASE}/tokens/${tokenAddress}/transferFrom`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spender, from, to, amount })
+    });
+    if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Transfer from failed');
     }
     return res.json();
 }

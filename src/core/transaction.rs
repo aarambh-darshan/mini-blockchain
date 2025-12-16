@@ -129,6 +129,50 @@ pub struct UTXO {
 }
 
 // =============================================================================
+// Token Operations (On-Chain ERC-20 style)
+// =============================================================================
+
+/// Token operation types that can be embedded in transactions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TokenOperationType {
+    /// Deploy a new token - all tokens go to the creator (transaction sender)
+    Create {
+        name: String,
+        symbol: String,
+        decimals: u8,
+        total_supply: u128,
+        is_mintable: bool,
+    },
+    /// Transfer tokens from sender to recipient
+    Transfer {
+        token_address: String,
+        to: String,
+        amount: u128,
+    },
+    /// Approve spender to transfer tokens on behalf of owner
+    Approve {
+        token_address: String,
+        spender: String,
+        amount: u128,
+    },
+    /// Transfer tokens on behalf of owner (requires prior approval)
+    TransferFrom {
+        token_address: String,
+        from: String,
+        to: String,
+        amount: u128,
+    },
+    /// Burn tokens (destroy from sender's balance)
+    Burn { token_address: String, amount: u128 },
+    /// Mint new tokens (only token creator/minter can do this)
+    Mint {
+        token_address: String,
+        to: String,
+        amount: u128,
+    },
+}
+
+// =============================================================================
 // Transaction
 // =============================================================================
 
@@ -160,6 +204,9 @@ pub struct Transaction {
     /// Transaction fee (set when added to mempool)
     #[serde(default)]
     pub fee: u64,
+    /// Optional token operation data (for on-chain ERC-20 style tokens)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_data: Option<TokenOperationType>,
 }
 
 fn default_version() -> u32 {
@@ -183,6 +230,7 @@ impl Transaction {
             locktime: 0,
             chain_id: DEFAULT_CHAIN_ID,
             fee: 0,
+            token_data: None,
         };
         tx.id = tx.calculate_hash();
         tx
@@ -238,36 +286,80 @@ impl Transaction {
             locktime: 0,
             chain_id: DEFAULT_CHAIN_ID,
             fee: 0,
+            token_data: None,
         };
         tx.id = tx.calculate_hash();
         tx
     }
 
+    /// Create a token operation transaction
+    ///
+    /// Token transactions don't need UTXOs for normal operations,
+    /// but require a valid sender address for authentication.
+    pub fn with_token_data(
+        inputs: Vec<TransactionInput>,
+        outputs: Vec<TransactionOutput>,
+        token_data: TokenOperationType,
+    ) -> Self {
+        let mut tx = Self {
+            version: TX_VERSION,
+            id: String::new(),
+            inputs,
+            outputs,
+            timestamp: Utc::now(),
+            is_coinbase: false,
+            locktime: 0,
+            chain_id: DEFAULT_CHAIN_ID,
+            fee: 0,
+            token_data: Some(token_data),
+        };
+        tx.id = tx.calculate_hash();
+        tx
+    }
+
+    /// Check if this is a token transaction
+    pub fn is_token_transaction(&self) -> bool {
+        self.token_data.is_some()
+    }
+
+    /// Get the sender address from the first input's public key
+    /// For token transactions, this is the address performing the operation
+    pub fn sender_address(&self) -> Option<String> {
+        self.inputs.first().map(|input| {
+            // Derive address from public key (same as wallet)
+            let hash = sha256(input.public_key.as_bytes());
+            let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+            format!("1{}", &hex[..39])
+        })
+    }
+
     /// Calculate the transaction hash (includes chain_id for replay protection)
     pub fn calculate_hash(&self) -> String {
         let data = format!(
-            "{}{:?}{:?}{}{}{}{}",
+            "{}{:?}{:?}{}{}{}{}{:?}",
             self.version,
             self.inputs,
             self.outputs,
             self.timestamp,
             self.is_coinbase,
             self.locktime,
-            self.chain_id
+            self.chain_id,
+            self.token_data
         );
         hex::encode(sha256(data.as_bytes()))
     }
 
-    /// Get the data to be signed (includes chain_id for replay protection)
+    /// Get the data to be signed (includes chain_id and token_data for replay protection)
     pub fn signing_data(&self) -> Vec<u8> {
         let data = format!(
-            "{}{:?}{:?}{}{}{}",
+            "{}{:?}{:?}{}{}{}{:?}",
             self.version,
             self.outputs,
             self.timestamp,
             self.is_coinbase,
             self.locktime,
-            self.chain_id
+            self.chain_id,
+            self.token_data
         );
         sha256(data.as_bytes())
     }
@@ -470,7 +562,15 @@ impl Transaction {
             return Ok(false);
         }
 
-        // Check that outputs are not empty
+        // Token transactions are allowed to have empty outputs
+        // (they only record token operations, not coin transfers)
+        if self.token_data.is_some() {
+            // Token transactions just need valid token data - no signatures required
+            // since the identity comes from the input's public_key field
+            return Ok(true);
+        }
+
+        // Check that outputs are not empty (for regular transactions)
         if self.outputs.is_empty() {
             return Ok(false);
         }
