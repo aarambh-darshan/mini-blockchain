@@ -64,9 +64,9 @@
 | 🔍 **SPV Support** | Bloom filters (BIP-37) for light clients |
 | 💵 **Fee Estimation** | Smart fee calculation (high/normal/low) |
 | 🗜️ **Compression** | Delta encoding for efficient storage |
-| 🪙 **Token Standards** | ERC-20 style fungible tokens |
+| 🪙 **On-Chain Tokens** | ERC-20 style fungible tokens via transaction opcodes |
 | ⛽ **Gas System** | Real gas payments for contracts |
-| 📜 **Smart Contracts** | Stack-based VM with bytecode |
+| 📜 **On-Chain Smart Contracts** | Stack-based VM with bytecode, deployed via transactions |
 | 🌐 **Web UI** | SvelteKit + shadcn-svelte dashboard |
 | 🚀 **REST API** | HTTP API with Axum |
 | 🔌 **WebSocket** | Real-time updates |
@@ -74,6 +74,7 @@
 ---
 
 ## 📦 Installation
+
 
 ### Prerequisites
 
@@ -257,6 +258,8 @@ ws.onmessage = (event) => {
 
 ### Smart Contracts
 
+See [CONTRACT_EXAMPLES.md](CONTRACT_EXAMPLES.md) for detailed examples and assembly code.
+
 | Command | Description |
 |---------|-------------|
 | `contract deploy --file FILE` | Deploy contract from .asm file |
@@ -366,7 +369,7 @@ src/
 ├── core/                # 🧱 Core Blockchain
 │   ├── block.rs         # Block structure & PoW mining
 │   ├── blockchain.rs    # Chain management & validation
-│   └── transaction.rs   # UTXO transactions & signatures
+│   └── transaction.rs   # UTXO transactions, signatures & on-chain ops
 │
 ├── crypto/              # 🔐 Cryptography
 │   ├── hash.rs          # SHA-256 hashing utilities
