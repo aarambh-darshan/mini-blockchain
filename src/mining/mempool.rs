@@ -393,6 +393,43 @@ impl Mempool {
                 .unwrap_or(0),
         }
     }
+
+    /// Add a token transaction to the pool (skips UTXO validation)
+    ///
+    /// Token transactions don't spend UTXOs - they record token operations on-chain.
+    /// This method allows adding them without requiring blockchain reference.
+    pub fn add_token_transaction(&mut self, tx: Transaction) -> Result<(), MempoolError> {
+        // Only allow token transactions
+        if tx.token_data.is_none() {
+            return Err(MempoolError::InvalidTransaction(
+                "Not a token transaction".to_string(),
+            ));
+        }
+
+        // Check for duplicate
+        if self.entries.contains_key(&tx.id) {
+            return Err(MempoolError::DuplicateTransaction);
+        }
+
+        // Add transaction
+        let tx_id = tx.id.clone();
+        let added_time = chrono::Utc::now().timestamp() as u64;
+        let entry = MempoolEntry::new(tx, added_time);
+
+        // Insert into fee-sorted list
+        let fee_rate = entry.fee_rate;
+        let pos = self
+            .by_fee
+            .iter()
+            .position(|id| self.entries.get(id).map(|e| e.fee_rate).unwrap_or(0) < fee_rate)
+            .unwrap_or(self.by_fee.len());
+        self.by_fee.insert(pos, tx_id.clone());
+
+        self.by_time.push(tx_id.clone());
+        self.entries.insert(tx_id, entry);
+
+        Ok(())
+    }
 }
 
 /// Mempool statistics

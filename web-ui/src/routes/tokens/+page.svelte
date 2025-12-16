@@ -31,6 +31,7 @@
     let tokenDecimals = $state(18);
     let tokenSupply = $state("1000000");
     let tokenCreator = $state("");
+    let tokenMintable = $state(false);
     let creating = $state(false);
     let createError = $state("");
     let createResult = $state<TokenInfo | null>(null);
@@ -116,6 +117,7 @@
                 tokenDecimals,
                 tokenSupply,
                 tokenCreator,
+                tokenMintable,
             );
             await loadTokens();
             // Select new token
@@ -261,6 +263,15 @@
         const divisor = BigInt(10 ** decimals);
         const whole = num / divisor;
         return whole.toLocaleString();
+    }
+
+    function formatAmount(amount: string): string {
+        // Display raw amount with thousands separator
+        try {
+            return BigInt(amount).toLocaleString();
+        } catch {
+            return amount;
+        }
     }
 </script>
 
@@ -429,10 +440,38 @@
                                         <p
                                             class="text-sm text-muted-foreground"
                                         >
+                                            Circulating Supply
+                                        </p>
+                                        <p class="text-lg font-bold font-mono">
+                                            {formatSupply(
+                                                selectedToken.current_supply,
+                                                selectedToken.decimals,
+                                            )}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div class="space-y-1">
+                                        <p
+                                            class="text-sm text-muted-foreground"
+                                        >
                                             Decimals
                                         </p>
                                         <p class="text-lg font-bold">
                                             {selectedToken.decimals}
+                                        </p>
+                                    </div>
+                                    <div class="space-y-1">
+                                        <p
+                                            class="text-sm text-muted-foreground"
+                                        >
+                                            Mintable
+                                        </p>
+                                        <p class="text-lg font-bold">
+                                            {selectedToken.is_mintable
+                                                ? "✅ Yes"
+                                                : "❌ No"}
                                         </p>
                                     </div>
                                 </div>
@@ -556,6 +595,19 @@
                             />
                             <p class="text-xs text-muted-foreground">
                                 All tokens will be allocated to this address
+                            </p>
+                        </div>
+
+                        <div class="flex items-center space-x-2">
+                            <input
+                                type="checkbox"
+                                id="mintable"
+                                bind:checked={tokenMintable}
+                                class="h-4 w-4 rounded border-gray-300"
+                            />
+                            <Label for="mintable">Mintable Token</Label>
+                            <p class="text-xs text-muted-foreground ml-2">
+                                Allow minting new tokens after creation
                             </p>
                         </div>
 
@@ -777,6 +829,20 @@
                                 >Burning tokens permanently removes them from
                                 circulation.</span
                             >
+                        </div>
+
+                        <div
+                            class="text-xs text-muted-foreground p-3 bg-muted rounded-lg"
+                        >
+                            <p class="font-medium mb-1">Why burn tokens?</p>
+                            <ul class="list-disc list-inside space-y-1">
+                                <li>
+                                    Reduce total supply (deflationary mechanism)
+                                </li>
+                                <li>Token buyback and burn programs</li>
+                                <li>Destroy unwanted or dust amounts</li>
+                                <li>Protocol fee burning</li>
+                            </ul>
                         </div>
 
                         <div class="space-y-2">
@@ -1100,11 +1166,7 @@
                                                 <td
                                                     class="p-4 align-middle text-right font-mono"
                                                 >
-                                                    {formatSupply(
-                                                        entry.amount,
-                                                        selectedToken.metadata
-                                                            .decimals,
-                                                    )}
+                                                    {formatAmount(entry.amount)}
                                                 </td>
                                             </tr>
                                         {/each}
