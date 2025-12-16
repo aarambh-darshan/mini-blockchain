@@ -1,13 +1,15 @@
 //! Mini-Blockchain: A production-ready blockchain implementation in Rust
 //!
 //! This crate provides a complete blockchain implementation featuring:
-//! - Proof of Work consensus
+//! - Proof of Work consensus with fork resolution
 //! - ECDSA digital signatures (secp256k1)
-//! - UTXO-based transaction model
+//! - UTXO-based transaction model with locktime and RBF
 //! - Merkle tree transaction verification
-//! - Wallet management
-//! - Transaction mempool
-//! - JSON persistence
+//! - Wallet management with multi-signature support
+//! - Transaction mempool with fee-based ordering
+//! - SPV light client support (bloom filters)
+//! - Fee estimation
+//! - JSON persistence with checkpoints and pruning
 //!
 //! # Example
 //!
@@ -48,11 +50,23 @@ pub mod wallet;
 // Re-export commonly used types
 pub use api::{create_router, ApiState};
 pub use contract::{Compiler, Contract, ContractManager, OpCode, VM};
-pub use core::{Block, Blockchain, Transaction, BLOCK_REWARD, DEFAULT_DIFFICULTY};
+pub use core::{
+    Block,
+    Blockchain,
+    // New Phase 5 exports
+    BloomFilter,
+    FeeEstimator,
+    FeeRate,
+    MerkleProof,
+    SpvClient,
+    Transaction,
+    BLOCK_REWARD,
+    DEFAULT_DIFFICULTY,
+};
 pub use crypto::KeyPair;
 pub use mining::{Mempool, Miner};
 pub use multisig::{MultisigConfig, MultisigManager, MultisigWallet};
 pub use network::{Node, NodeConfig};
-pub use storage::Storage;
+pub use storage::{BlockIndex, CheckpointManager, Pruner, Storage, UtxoCache};
 pub use token::{Token, TokenManager, TokenMetadata};
 pub use wallet::Wallet;

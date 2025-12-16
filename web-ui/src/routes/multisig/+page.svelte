@@ -5,9 +5,14 @@
         createMultisig,
         getMultisigBalance,
         listPendingTx,
+        proposeMultisigTx,
+        getWallets,
+        signWithWallet,
+        broadcastMultisigTx,
         type MultisigWalletInfo,
         type PendingTxInfo,
         type BalanceResponse,
+        type WalletResponse,
     } from "$lib/api";
     import * as Card from "$lib/components/ui/card";
     import { Button } from "$lib/components/ui/button";
@@ -23,6 +28,9 @@
     let pendingTxs = $state<PendingTxInfo[]>([]);
     let loading = $state(true);
 
+    // Available wallets for signing
+    let availableWallets = $state<WalletResponse[]>([]);
+
     // Create state
     let threshold = $state(2);
     let signersInput = $state("");
@@ -31,9 +39,37 @@
     let createError = $state("");
     let createResult = $state<MultisigWalletInfo | null>(null);
 
+    // Propose state
+    let proposeTo = $state("");
+    let proposeAmount = $state(0);
+    let proposing = $state(false);
+    let proposeError = $state("");
+    let proposeSuccess = $state("");
+
+    // Sign state
+    let signingTxId = $state("");
+    let signWalletAddr = $state("");
+    let signing = $state(false);
+    let signError = $state("");
+    let signSuccess = $state("");
+
+    // Broadcast state
+    let broadcasting = $state(false);
+    let broadcastTxId = $state("");
+    let broadcastError = $state("");
+    let broadcastSuccess = $state("");
+
     onMount(async () => {
-        await loadWallets();
+        await Promise.all([loadWallets(), loadAvailableWallets()]);
     });
+
+    async function loadAvailableWallets() {
+        try {
+            availableWallets = await getWallets();
+        } catch (e) {
+            console.error(e);
+        }
+    }
 
     async function loadWallets() {
         loading = true;
@@ -99,6 +135,75 @@
             createError = e.message;
         } finally {
             creating = false;
+        }
+    }
+
+    async function handlePropose() {
+        if (!selectedWallet || !proposeTo || proposeAmount <= 0) return;
+        proposing = true;
+        proposeError = "";
+        proposeSuccess = "";
+
+        try {
+            const tx = await proposeMultisigTx(
+                selectedWallet.address,
+                proposeTo,
+                proposeAmount,
+            );
+            proposeSuccess = `Transaction proposed! ID: ${tx.id.slice(0, 16)}...`;
+            proposeTo = "";
+            proposeAmount = 0;
+            // Refresh pending txs
+            pendingTxs = await listPendingTx(selectedWallet.address);
+        } catch (e: any) {
+            proposeError = e.message;
+        } finally {
+            proposing = false;
+        }
+    }
+
+    async function handleSign(txId: string) {
+        if (!selectedWallet || !signWalletAddr) return;
+        signing = true;
+        signingTxId = txId;
+        signError = "";
+        signSuccess = "";
+
+        try {
+            await signWithWallet(selectedWallet.address, txId, signWalletAddr);
+            signSuccess = "Signed successfully!";
+            // Refresh pending txs
+            pendingTxs = await listPendingTx(selectedWallet.address);
+            signingTxId = "";
+        } catch (e: any) {
+            signError = e.message;
+        } finally {
+            signing = false;
+        }
+    }
+
+    async function handleBroadcast(txId: string) {
+        if (!selectedWallet) return;
+        broadcasting = true;
+        broadcastTxId = txId;
+        broadcastError = "";
+        broadcastSuccess = "";
+
+        try {
+            const result = await broadcastMultisigTx(
+                selectedWallet.address,
+                txId,
+            );
+            broadcastSuccess = result.message;
+            // Refresh pending txs (will be removed after broadcast)
+            pendingTxs = await listPendingTx(selectedWallet.address);
+            // Refresh balance
+            selectedBalance = await getMultisigBalance(selectedWallet.address);
+            broadcastTxId = "";
+        } catch (e: any) {
+            broadcastError = e.message;
+        } finally {
+            broadcasting = false;
         }
     }
 
@@ -279,6 +384,49 @@
                                                 </code>
                                             </div>
                                         {/each}
+                                    </div>
+                                </div>
+
+                                <Separator />
+
+                                <!-- Propose Transaction Section -->
+                                <div class="space-y-3">
+                                    <p class="text-sm font-medium">
+                                        📤 Propose Transaction
+                                    </p>
+                                    <div class="space-y-2">
+                                        <Input
+                                            bind:value={proposeTo}
+                                            placeholder="Recipient address"
+                                        />
+                                        <Input
+                                            type="number"
+                                            bind:value={proposeAmount}
+                                            placeholder="Amount"
+                                            min="1"
+                                        />
+                                        {#if proposeError}
+                                            <p class="text-xs text-destructive">
+                                                {proposeError}
+                                            </p>
+                                        {/if}
+                                        {#if proposeSuccess}
+                                            <p class="text-xs text-green-500">
+                                                {proposeSuccess}
+                                            </p>
+                                        {/if}
+                                        <Button
+                                            size="sm"
+                                            class="w-full"
+                                            onclick={() => handlePropose()}
+                                            disabled={proposing ||
+                                                !proposeTo ||
+                                                proposeAmount <= 0}
+                                        >
+                                            {proposing
+                                                ? "Proposing..."
+                                                : "📝 Propose"}
+                                        </Button>
                                     </div>
                                 </div>
 
@@ -552,6 +700,104 @@
                                             signatures
                                         </span>
                                     </div>
+
+                                    <!-- Sign with wallet -->
+                                    {#if tx.status === "AwaitingSignatures" && availableWallets.length > 0}
+                                        <div
+                                            class="mt-3 pt-3 border-t space-y-2"
+                                        >
+                                            <p class="text-xs font-medium">
+                                                ✍️ Sign with wallet:
+                                            </p>
+                                            <div class="flex gap-2">
+                                                <select
+                                                    class="flex-1 h-9 px-3 rounded-md border border-input bg-background text-sm"
+                                                    bind:value={signWalletAddr}
+                                                >
+                                                    <option value=""
+                                                        >Select wallet</option
+                                                    >
+                                                    {#each availableWallets as w}
+                                                        <option
+                                                            value={w.address}
+                                                        >
+                                                            {formatAddress(
+                                                                w.address,
+                                                            )}
+                                                        </option>
+                                                    {/each}
+                                                </select>
+                                                <Button
+                                                    size="sm"
+                                                    onclick={() =>
+                                                        handleSign(tx.id)}
+                                                    disabled={signing ||
+                                                        !signWalletAddr}
+                                                >
+                                                    {signing &&
+                                                    signingTxId === tx.id
+                                                        ? "..."
+                                                        : "Sign"}
+                                                </Button>
+                                            </div>
+                                            {#if signError && signingTxId === tx.id}
+                                                <p
+                                                    class="text-xs text-destructive"
+                                                >
+                                                    {signError}
+                                                </p>
+                                            {/if}
+                                            {#if signSuccess && signingTxId === tx.id}
+                                                <p
+                                                    class="text-xs text-green-500"
+                                                >
+                                                    {signSuccess}
+                                                </p>
+                                            {/if}
+                                        </div>
+                                    {/if}
+
+                                    <!-- Broadcast ready transaction -->
+                                    {#if tx.status === "Ready"}
+                                        <div
+                                            class="mt-3 pt-3 border-t space-y-2"
+                                        >
+                                            <div
+                                                class="flex items-center justify-between"
+                                            >
+                                                <p
+                                                    class="text-xs font-medium text-green-500"
+                                                >
+                                                    ✅ Ready to broadcast!
+                                                </p>
+                                                <Button
+                                                    size="sm"
+                                                    onclick={() =>
+                                                        handleBroadcast(tx.id)}
+                                                    disabled={broadcasting}
+                                                >
+                                                    {broadcasting &&
+                                                    broadcastTxId === tx.id
+                                                        ? "Broadcasting..."
+                                                        : "📡 Broadcast"}
+                                                </Button>
+                                            </div>
+                                            {#if broadcastError && broadcastTxId === tx.id}
+                                                <p
+                                                    class="text-xs text-destructive"
+                                                >
+                                                    {broadcastError}
+                                                </p>
+                                            {/if}
+                                            {#if broadcastSuccess && broadcastTxId === tx.id}
+                                                <p
+                                                    class="text-xs text-green-500"
+                                                >
+                                                    {broadcastSuccess}
+                                                </p>
+                                            {/if}
+                                        </div>
+                                    {/if}
 
                                     <p
                                         class="text-xs text-muted-foreground mt-2"

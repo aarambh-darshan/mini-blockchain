@@ -125,8 +125,16 @@ pub fn create_router(state: ApiState) -> Router {
             post(handlers::sign_multisig_tx),
         )
         .route(
+            "/api/multisig/{address}/sign-with-wallet",
+            post(handlers::sign_with_wallet),
+        )
+        .route(
             "/api/multisig/{address}/pending",
             get(handlers::list_pending_tx),
+        )
+        .route(
+            "/api/multisig/{address}/broadcast",
+            post(handlers::broadcast_multisig_tx),
         )
         // Tokens (ERC-20 style)
         .route("/api/tokens", get(handlers::list_tokens))
@@ -152,6 +160,16 @@ pub fn create_router(state: ApiState) -> Router {
             "/api/tokens/{address}/transferFrom",
             post(handlers::transfer_from_tokens),
         )
+        .route("/api/tokens/{address}/burn", post(handlers::burn_tokens))
+        .route("/api/tokens/{address}/mint", post(handlers::mint_tokens))
+        .route(
+            "/api/tokens/{address}/history",
+            get(handlers::get_token_history),
+        )
+        // Fee Estimation
+        .route("/api/fees", get(handlers::get_fee_estimates))
+        // Advanced Stats
+        .route("/api/stats", get(handlers::get_advanced_stats))
         // Search
         .route("/api/search", get(handlers::search))
         // Static files (Web UI)

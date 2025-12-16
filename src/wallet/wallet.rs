@@ -82,6 +82,21 @@ impl Wallet {
         self.key_pair.private_key_hex()
     }
 
+    /// Sign a message and return hex-encoded signature
+    pub fn sign_message(&self, message: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(message.as_bytes());
+        match self.key_pair.sign(&hash) {
+            Ok(sig) => hex::encode(sig),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Sign raw data bytes and return signature bytes
+    pub fn sign_data(&self, data: &[u8]) -> Result<Vec<u8>, WalletError> {
+        self.key_pair.sign(data).map_err(WalletError::from)
+    }
+
     /// Get the balance from the blockchain
     pub fn balance(&self, blockchain: &Blockchain) -> u64 {
         blockchain.get_balance(&self.address())

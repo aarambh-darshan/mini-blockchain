@@ -190,6 +190,47 @@ impl TokenManager {
             })
             .collect()
     }
+
+    /// Burn tokens
+    pub fn burn(
+        &mut self,
+        token_address: &str,
+        from: &str,
+        amount: u128,
+    ) -> Result<crate::token::token::BurnEvent, TokenError> {
+        let token = self
+            .tokens
+            .get_mut(token_address)
+            .ok_or_else(|| TokenError::TokenNotFound(token_address.to_string()))?;
+
+        token.burn(from, amount)
+    }
+
+    /// Mint new tokens
+    pub fn mint(
+        &mut self,
+        token_address: &str,
+        caller: &str,
+        to: &str,
+        amount: u128,
+    ) -> Result<crate::token::token::MintEvent, TokenError> {
+        let token = self
+            .tokens
+            .get_mut(token_address)
+            .ok_or_else(|| TokenError::TokenNotFound(token_address.to_string()))?;
+
+        token.mint(caller, to, amount)
+    }
+
+    /// Get transfer history for a token
+    pub fn get_history(&self, token_address: &str) -> Result<Vec<TransferEvent>, TokenError> {
+        let token = self
+            .tokens
+            .get(token_address)
+            .ok_or_else(|| TokenError::TokenNotFound(token_address.to_string()))?;
+
+        Ok(token.transfer_history.clone())
+    }
 }
 
 #[cfg(test)]

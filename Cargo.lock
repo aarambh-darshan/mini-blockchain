@@ -685,6 +685,7 @@ name = "mini-blockchain"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bitflags",
  "bs58",
  "bytes",
  "chrono",

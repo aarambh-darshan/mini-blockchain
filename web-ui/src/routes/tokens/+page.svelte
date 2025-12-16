@@ -5,7 +5,13 @@
         createToken,
         getTokenBalance,
         transferTokens,
+        burnTokens,
+        mintTokens,
+        approveToken,
+        getTokenAllowance,
+        getTokenHistory,
         type TokenInfo,
+        type TokenHistoryEntry,
     } from "$lib/api";
     import * as Card from "$lib/components/ui/card";
     import { Button } from "$lib/components/ui/button";
@@ -41,6 +47,34 @@
     let transferring = $state(false);
     let transferError = $state("");
     let transferSuccess = $state(false);
+
+    // Burn state
+    let burnFrom = $state("");
+    let burnAmount = $state("");
+    let burning = $state(false);
+    let burnError = $state("");
+    let burnSuccess = $state(false);
+
+    // Mint state
+    let mintCaller = $state("");
+    let mintTo = $state("");
+    let mintAmount = $state("");
+    let minting = $state(false);
+    let mintError = $state("");
+    let mintSuccess = $state(false);
+
+    // Approve state
+    let approveOwner = $state("");
+    let approveSpender = $state("");
+    let approveAmount = $state("");
+    let approving = $state(false);
+    let approveError = $state("");
+    let approveSuccess = $state(false);
+
+    // History state
+    let history = $state<TokenHistoryEntry[]>([]);
+    let historyLoading = $state(false);
+    let historyError = $state("");
 
     onMount(async () => {
         await loadTokens();
@@ -137,6 +171,86 @@
         }
     }
 
+    async function handleBurn() {
+        if (!selectedToken || !burnFrom || !burnAmount) return;
+        burning = true;
+        burnError = "";
+        burnSuccess = false;
+
+        try {
+            await burnTokens(selectedToken.address, burnFrom, burnAmount);
+            burnSuccess = true;
+            await loadTokens();
+        } catch (e: any) {
+            burnError = e.message;
+        } finally {
+            burning = false;
+        }
+    }
+
+    async function handleMint() {
+        if (!selectedToken || !mintCaller || !mintTo || !mintAmount) return;
+        minting = true;
+        mintError = "";
+        mintSuccess = false;
+
+        try {
+            await mintTokens(
+                selectedToken.address,
+                mintCaller,
+                mintTo,
+                mintAmount,
+            );
+            mintSuccess = true;
+            await loadTokens();
+        } catch (e: any) {
+            mintError = e.message;
+        } finally {
+            minting = false;
+        }
+    }
+
+    async function handleApprove() {
+        if (
+            !selectedToken ||
+            !approveOwner ||
+            !approveSpender ||
+            !approveAmount
+        )
+            return;
+        approving = true;
+        approveError = "";
+        approveSuccess = false;
+
+        try {
+            await approveToken(
+                selectedToken.address,
+                approveOwner,
+                approveSpender,
+                approveAmount,
+            );
+            approveSuccess = true;
+        } catch (e: any) {
+            approveError = e.message;
+        } finally {
+            approving = false;
+        }
+    }
+
+    async function loadHistory() {
+        if (!selectedToken) return;
+        historyLoading = true;
+        historyError = "";
+
+        try {
+            history = await getTokenHistory(selectedToken.address);
+        } catch (e: any) {
+            historyError = e.message;
+        } finally {
+            historyLoading = false;
+        }
+    }
+
     function formatAddress(addr: string): string {
         if (addr.length <= 16) return addr;
         return `${addr.slice(0, 8)}...${addr.slice(-8)}`;
@@ -163,10 +277,14 @@
     </div>
 
     <Tabs.Root value="tokens" class="w-full">
-        <Tabs.List class="grid w-full grid-cols-3">
+        <Tabs.List class="grid w-full grid-cols-4 lg:grid-cols-7">
             <Tabs.Trigger value="tokens">Tokens ({tokens.length})</Tabs.Trigger>
             <Tabs.Trigger value="create">Create</Tabs.Trigger>
             <Tabs.Trigger value="transfer">Transfer</Tabs.Trigger>
+            <Tabs.Trigger value="burn">🔥 Burn</Tabs.Trigger>
+            <Tabs.Trigger value="mint">✨ Mint</Tabs.Trigger>
+            <Tabs.Trigger value="approve">🔐 Approve</Tabs.Trigger>
+            <Tabs.Trigger value="history">📜 History</Tabs.Trigger>
         </Tabs.List>
 
         <!-- Tokens Tab -->
@@ -631,6 +749,371 @@
                         </Button>
                     </Card.Footer>
                 {/if}
+            </Card.Root>
+        </Tabs.Content>
+
+        <!-- Burn Tab -->
+        <Tabs.Content value="burn" class="mt-4">
+            <Card.Root class="max-w-2xl">
+                <Card.Header>
+                    <Card.Title>🔥 Burn Tokens</Card.Title>
+                    <Card.Description>
+                        Destroy tokens from your balance (irreversible)
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
+                    {#if !selectedToken}
+                        <div
+                            class="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                        >
+                            <p>Select a token from the Tokens tab first</p>
+                        </div>
+                    {:else}
+                        <div
+                            class="flex items-center gap-2 p-3 rounded-lg bg-orange-500/10 border border-orange-500/50"
+                        >
+                            <span>⚠️</span>
+                            <span class="text-sm"
+                                >Burning tokens permanently removes them from
+                                circulation.</span
+                            >
+                        </div>
+
+                        <div class="space-y-2">
+                            <Label for="burnFrom">From Address</Label>
+                            <Input
+                                id="burnFrom"
+                                bind:value={burnFrom}
+                                placeholder="Your address"
+                            />
+                        </div>
+
+                        <div class="space-y-2">
+                            <Label for="burnAmount">Amount</Label>
+                            <Input
+                                id="burnAmount"
+                                bind:value={burnAmount}
+                                placeholder="Amount to burn"
+                            />
+                        </div>
+
+                        {#if burnError}
+                            <div
+                                class="rounded-lg border border-destructive/50 bg-destructive/10 p-3"
+                            >
+                                <p class="text-destructive text-sm">
+                                    {burnError}
+                                </p>
+                            </div>
+                        {/if}
+
+                        {#if burnSuccess}
+                            <div
+                                class="rounded-lg border border-green-500/50 bg-green-500/10 p-3"
+                            >
+                                <p class="text-green-500 font-medium">
+                                    ✅ Tokens burned successfully!
+                                </p>
+                            </div>
+                        {/if}
+                    {/if}
+                </Card.Content>
+                {#if selectedToken}
+                    <Card.Footer>
+                        <Button
+                            variant="destructive"
+                            class="w-full"
+                            onclick={handleBurn}
+                            disabled={burning || !burnFrom || !burnAmount}
+                        >
+                            {burning ? "Burning..." : "🔥 Burn Tokens"}
+                        </Button>
+                    </Card.Footer>
+                {/if}
+            </Card.Root>
+        </Tabs.Content>
+
+        <!-- Mint Tab -->
+        <Tabs.Content value="mint" class="mt-4">
+            <Card.Root class="max-w-2xl">
+                <Card.Header>
+                    <Card.Title>✨ Mint Tokens</Card.Title>
+                    <Card.Description>
+                        Create new tokens (only if you are the minter/creator)
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
+                    {#if !selectedToken}
+                        <div
+                            class="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                        >
+                            <p>Select a token from the Tokens tab first</p>
+                        </div>
+                    {:else if !selectedToken.is_mintable}
+                        <div
+                            class="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                        >
+                            <p>❌ This token is not mintable</p>
+                        </div>
+                    {:else}
+                        <div class="space-y-2">
+                            <Label for="mintCaller">Minter Address</Label>
+                            <Input
+                                id="mintCaller"
+                                bind:value={mintCaller}
+                                placeholder="Creator address"
+                            />
+                        </div>
+
+                        <div class="space-y-2">
+                            <Label for="mintTo">To Address</Label>
+                            <Input
+                                id="mintTo"
+                                bind:value={mintTo}
+                                placeholder="Recipient address"
+                            />
+                        </div>
+
+                        <div class="space-y-2">
+                            <Label for="mintAmount">Amount</Label>
+                            <Input
+                                id="mintAmount"
+                                bind:value={mintAmount}
+                                placeholder="Amount to mint"
+                            />
+                        </div>
+
+                        {#if mintError}
+                            <div
+                                class="rounded-lg border border-destructive/50 bg-destructive/10 p-3"
+                            >
+                                <p class="text-destructive text-sm">
+                                    {mintError}
+                                </p>
+                            </div>
+                        {/if}
+
+                        {#if mintSuccess}
+                            <div
+                                class="rounded-lg border border-green-500/50 bg-green-500/10 p-3"
+                            >
+                                <p class="text-green-500 font-medium">
+                                    ✅ Tokens minted successfully!
+                                </p>
+                            </div>
+                        {/if}
+                    {/if}
+                </Card.Content>
+                {#if selectedToken && selectedToken.is_mintable}
+                    <Card.Footer>
+                        <Button
+                            class="w-full"
+                            onclick={handleMint}
+                            disabled={minting ||
+                                !mintCaller ||
+                                !mintTo ||
+                                !mintAmount}
+                        >
+                            {minting ? "Minting..." : "✨ Mint Tokens"}
+                        </Button>
+                    </Card.Footer>
+                {/if}
+            </Card.Root>
+        </Tabs.Content>
+
+        <!-- Approve Tab -->
+        <Tabs.Content value="approve" class="mt-4">
+            <Card.Root class="max-w-2xl">
+                <Card.Header>
+                    <Card.Title>🔐 Approve Spender</Card.Title>
+                    <Card.Description>
+                        Allow another address to spend tokens on your behalf
+                    </Card.Description>
+                </Card.Header>
+                <Card.Content class="space-y-4">
+                    {#if !selectedToken}
+                        <div
+                            class="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                        >
+                            <p>Select a token from the Tokens tab first</p>
+                        </div>
+                    {:else}
+                        <div class="space-y-2">
+                            <Label for="approveOwner">Owner Address</Label>
+                            <Input
+                                id="approveOwner"
+                                bind:value={approveOwner}
+                                placeholder="Your address"
+                            />
+                        </div>
+
+                        <div class="space-y-2">
+                            <Label for="approveSpender">Spender Address</Label>
+                            <Input
+                                id="approveSpender"
+                                bind:value={approveSpender}
+                                placeholder="Spender address"
+                            />
+                        </div>
+
+                        <div class="space-y-2">
+                            <Label for="approveAmount">Allowance Amount</Label>
+                            <Input
+                                id="approveAmount"
+                                bind:value={approveAmount}
+                                placeholder="Amount to approve"
+                            />
+                        </div>
+
+                        {#if approveError}
+                            <div
+                                class="rounded-lg border border-destructive/50 bg-destructive/10 p-3"
+                            >
+                                <p class="text-destructive text-sm">
+                                    {approveError}
+                                </p>
+                            </div>
+                        {/if}
+
+                        {#if approveSuccess}
+                            <div
+                                class="rounded-lg border border-green-500/50 bg-green-500/10 p-3"
+                            >
+                                <p class="text-green-500 font-medium">
+                                    ✅ Approval successful!
+                                </p>
+                            </div>
+                        {/if}
+                    {/if}
+                </Card.Content>
+                {#if selectedToken}
+                    <Card.Footer>
+                        <Button
+                            class="w-full"
+                            onclick={handleApprove}
+                            disabled={approving ||
+                                !approveOwner ||
+                                !approveSpender ||
+                                !approveAmount}
+                        >
+                            {approving ? "Approving..." : "🔐 Approve Spender"}
+                        </Button>
+                    </Card.Footer>
+                {/if}
+            </Card.Root>
+        </Tabs.Content>
+
+        <!-- History Tab -->
+        <Tabs.Content value="history" class="mt-4">
+            <Card.Root>
+                <Card.Header>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <Card.Title>📜 Transfer History</Card.Title>
+                            <Card.Description>
+                                Recent transfers for this token
+                            </Card.Description>
+                        </div>
+                        {#if selectedToken}
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onclick={loadHistory}
+                                disabled={historyLoading}
+                            >
+                                {historyLoading ? "Loading..." : "🔄 Refresh"}
+                            </Button>
+                        {/if}
+                    </div>
+                </Card.Header>
+                <Card.Content>
+                    {#if !selectedToken}
+                        <div
+                            class="flex flex-col items-center justify-center h-32 text-muted-foreground"
+                        >
+                            <p>Select a token from the Tokens tab first</p>
+                        </div>
+                    {:else}
+                        {#if historyError}
+                            <div
+                                class="rounded-lg border border-destructive/50 bg-destructive/10 p-3 mb-4"
+                            >
+                                <p class="text-destructive text-sm">
+                                    {historyError}
+                                </p>
+                            </div>
+                        {/if}
+
+                        <div class="rounded-md border">
+                            <table class="w-full text-sm">
+                                <thead class="border-b bg-muted/50">
+                                    <tr>
+                                        <th
+                                            class="h-10 px-4 text-left font-medium"
+                                            >Time</th
+                                        >
+                                        <th
+                                            class="h-10 px-4 text-left font-medium"
+                                            >From</th
+                                        >
+                                        <th
+                                            class="h-10 px-4 text-left font-medium"
+                                            >To</th
+                                        >
+                                        <th
+                                            class="h-10 px-4 text-right font-medium"
+                                            >Amount</th
+                                        >
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {#if history.length === 0}
+                                        <tr>
+                                            <td
+                                                colspan="4"
+                                                class="h-24 text-center text-muted-foreground"
+                                            >
+                                                No history available (click
+                                                Refresh)
+                                            </td>
+                                        </tr>
+                                    {:else}
+                                        {#each history as entry}
+                                            <tr
+                                                class="border-b last:border-0 hover:bg-muted/50"
+                                            >
+                                                <td class="p-4 align-middle">
+                                                    {new Date(
+                                                        entry.timestamp,
+                                                    ).toLocaleTimeString()}
+                                                </td>
+                                                <td
+                                                    class="p-4 align-middle font-mono text-xs"
+                                                >
+                                                    {formatAddress(entry.from)}
+                                                </td>
+                                                <td
+                                                    class="p-4 align-middle font-mono text-xs"
+                                                >
+                                                    {formatAddress(entry.to)}
+                                                </td>
+                                                <td
+                                                    class="p-4 align-middle text-right font-mono"
+                                                >
+                                                    {formatSupply(
+                                                        entry.amount,
+                                                        selectedToken.metadata
+                                                            .decimals,
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        {/each}
+                                    {/if}
+                                </tbody>
+                            </table>
+                        </div>
+                    {/if}
+                </Card.Content>
             </Card.Root>
         </Tabs.Content>
     </Tabs.Root>
