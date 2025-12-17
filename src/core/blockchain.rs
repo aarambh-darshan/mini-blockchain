@@ -4,11 +4,11 @@
 //! Features production-grade consensus with fork resolution, orphan handling,
 //! and Median Time Past (MTP) validation.
 
-use crate::core::block::Block;
+use crate::core::block::{Block, BlockError};
 use crate::core::chain_state::{
     BlockStatus, ChainStateManager, UndoData, MAX_FUTURE_BLOCK_TIME, MTP_BLOCK_COUNT,
 };
-use crate::core::transaction::{Transaction, UTXO};
+use crate::core::transaction::{Transaction, COINBASE_MATURITY, UTXO};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -46,6 +46,10 @@ pub enum BlockchainError {
     InvalidTimestamp(String),
     #[error("Reorganization failed: {0}")]
     ReorgFailed(String),
+    #[error("Block validation failed: {0}")]
+    BlockValidation(#[from] BlockError),
+    #[error("Coinbase not mature: tx {0} needs {1} more blocks")]
+    CoinbaseNotMature(String, u64),
 }
 
 /// The main blockchain structure with production-grade consensus
@@ -64,6 +68,10 @@ pub struct Blockchain {
     /// Chain state manager (orphans, tips, undo data)
     #[serde(skip, default)]
     pub state: ChainStateManager,
+    /// Coinbase transaction heights: tx_id -> block height where it was mined
+    /// Used to enforce COINBASE_MATURITY (100 block delay before spending)
+    #[serde(skip, default)]
+    pub coinbase_heights: HashMap<String, u64>,
 }
 
 impl Blockchain {
@@ -78,6 +86,7 @@ impl Blockchain {
             utxo_set: HashMap::new(),
             chain_work: genesis_work,
             state: ChainStateManager::new(),
+            coinbase_heights: HashMap::new(),
         };
 
         // Initialize state
@@ -100,6 +109,7 @@ impl Blockchain {
             utxo_set: HashMap::new(),
             chain_work: genesis_work,
             state: ChainStateManager::new(),
+            coinbase_heights: HashMap::new(),
         };
 
         blockchain.state.index_block(genesis.hash.clone(), 0);
@@ -622,6 +632,7 @@ impl Blockchain {
     /// Rebuild the UTXO set from the blockchain
     pub fn rebuild_utxo_set(&mut self) {
         self.utxo_set.clear();
+        self.coinbase_heights.clear();
 
         // Clone blocks to avoid borrow checker issues
         let blocks = self.blocks.clone();
@@ -633,11 +644,18 @@ impl Blockchain {
     /// Process a block's transactions for UTXO updates
     fn process_block_utxos(&mut self, block: &Block) {
         for tx in &block.transactions {
+            // Track coinbase transaction heights for maturity checks
+            if tx.is_coinbase {
+                self.coinbase_heights.insert(tx.id.clone(), block.index);
+            }
+
             // Remove spent outputs (inputs)
             for input in &tx.inputs {
                 if !tx.is_coinbase {
                     let key = format!("{}:{}", input.tx_id, input.output_index);
                     self.utxo_set.remove(&key);
+                    // Also remove from coinbase tracking if spending a coinbase
+                    self.coinbase_heights.remove(&input.tx_id);
                 }
             }
 
@@ -661,7 +679,7 @@ impl Blockchain {
         self.process_block_utxos(block);
     }
 
-    /// Get UTXOs for a specific address
+    /// Get UTXOs for a specific address (includes immature coinbase)
     pub fn get_utxos_for_address(&self, address: &str) -> Vec<UTXO> {
         self.utxo_set
             .values()
@@ -670,7 +688,7 @@ impl Blockchain {
             .collect()
     }
 
-    /// Get balance for an address
+    /// Get balance for an address (includes immature coinbase)
     pub fn get_balance(&self, address: &str) -> u64 {
         self.get_utxos_for_address(address)
             .iter()
@@ -682,6 +700,60 @@ impl Blockchain {
     pub fn find_utxo(&self, tx_id: &str, output_index: u32) -> Option<&UTXO> {
         let key = format!("{}:{}", tx_id, output_index);
         self.utxo_set.get(&key)
+    }
+
+    // =========================================================================
+    // Coinbase Maturity (Production-grade - Bitcoin uses 100 blocks)
+    // =========================================================================
+
+    /// Check if a coinbase transaction is mature enough to spend
+    /// Coinbase outputs require COINBASE_MATURITY (100) confirmations
+    pub fn is_coinbase_mature(&self, tx_id: &str) -> bool {
+        if let Some(&coinbase_height) = self.coinbase_heights.get(tx_id) {
+            let current_height = self.height();
+            let confirmations = current_height.saturating_sub(coinbase_height);
+            confirmations >= COINBASE_MATURITY
+        } else {
+            // Not a coinbase transaction, always spendable
+            true
+        }
+    }
+
+    /// Get blocks remaining until coinbase is mature
+    pub fn coinbase_blocks_until_mature(&self, tx_id: &str) -> u64 {
+        if let Some(&coinbase_height) = self.coinbase_heights.get(tx_id) {
+            let current_height = self.height();
+            let confirmations = current_height.saturating_sub(coinbase_height);
+            if confirmations >= COINBASE_MATURITY {
+                0
+            } else {
+                COINBASE_MATURITY - confirmations
+            }
+        } else {
+            0
+        }
+    }
+
+    /// Get only spendable UTXOs for an address (excludes immature coinbase)
+    pub fn get_spendable_utxos_for_address(&self, address: &str) -> Vec<UTXO> {
+        self.utxo_set
+            .values()
+            .filter(|utxo| utxo.output.recipient == address && self.is_coinbase_mature(&utxo.tx_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Get spendable balance for an address (excludes immature coinbase)
+    pub fn get_spendable_balance(&self, address: &str) -> u64 {
+        self.get_spendable_utxos_for_address(address)
+            .iter()
+            .map(|utxo| utxo.output.amount)
+            .sum()
+    }
+
+    /// Get immature (locked) balance for an address
+    pub fn get_immature_balance(&self, address: &str) -> u64 {
+        self.get_balance(address) - self.get_spendable_balance(address)
     }
 
     /// Burn (remove) coins from an address as gas fees

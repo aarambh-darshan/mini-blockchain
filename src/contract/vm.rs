@@ -1,17 +1,51 @@
 //! Smart contract virtual machine
 //!
 //! A stack-based VM for executing smart contract bytecode.
+//! Production-grade security features:
+//! - Call depth limit (1024, like EVM)
+//! - Memory gas metering
+//! - Stack overflow protection
+//! - Reentrancy detection
 
 use crate::contract::opcodes::OpCode;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
+
+// =============================================================================
+// VM Constants (EVM-like production values)
+// =============================================================================
 
 /// Maximum stack size
 const MAX_STACK_SIZE: usize = 1024;
 
+/// Maximum call depth (EVM uses 1024)
+pub const MAX_CALL_DEPTH: usize = 1024;
+
 /// Default gas limit
 pub const DEFAULT_GAS_LIMIT: u64 = 100_000;
+
+/// Maximum memory size in pages (256 pages * 256 bytes = 64KB)
+pub const MAX_MEMORY_PAGES: usize = 256;
+
+/// Memory page size in bytes
+pub const MEMORY_PAGE_SIZE: usize = 256;
+
+/// Gas cost for memory expansion per page
+pub const MEMORY_GAS_PER_PAGE: u64 = 3;
+
+/// Gas cost for storage write
+pub const SSTORE_GAS: u64 = 5000;
+
+/// Gas refund for storage clear
+pub const SSTORE_REFUND: u64 = 4800;
+
+/// Gas cost for storage read
+pub const SLOAD_GAS: u64 = 200;
+
+// =============================================================================
+// VM Errors
+// =============================================================================
 
 /// VM execution errors
 #[derive(Error, Debug, Clone)]
@@ -36,6 +70,12 @@ pub enum VmError {
     InsufficientBalance,
     #[error("Invalid address")]
     InvalidAddress,
+    #[error("Call depth exceeded: {0} (max: {1})")]
+    CallDepthExceeded(usize, usize),
+    #[error("Out of memory: {0} pages (max: {1})")]
+    OutOfMemory(usize, usize),
+    #[error("Reentrancy detected: contract {0} is already executing")]
+    ReentrancyDetected(String),
 }
 
 /// Execution context for the VM
@@ -83,6 +123,8 @@ pub struct ExecutionResult {
     pub transfers: Vec<(String, u64)>,
     /// Error message (if failed)
     pub error: Option<String>,
+    /// Call depth reached during execution
+    pub call_depth: usize,
 }
 
 /// The smart contract virtual machine
@@ -107,6 +149,12 @@ pub struct VM {
     halted: bool,
     /// Return value
     return_value: Option<u64>,
+    /// Current call depth (for nested calls)
+    call_depth: usize,
+    /// Current memory size in pages
+    memory_pages: usize,
+    /// Set of contracts currently executing (for reentrancy detection)
+    executing_contracts: HashSet<String>,
 }
 
 impl VM {
@@ -123,7 +171,80 @@ impl VM {
             context,
             halted: false,
             return_value: None,
+            call_depth: 0,
+            memory_pages: 0,
+            executing_contracts: HashSet::new(),
         }
+    }
+
+    /// Create a VM with an initial call depth (for nested calls)
+    pub fn with_call_depth(
+        code: Vec<u8>,
+        storage: HashMap<String, u64>,
+        context: ExecutionContext,
+        call_depth: usize,
+        executing_contracts: HashSet<String>,
+    ) -> Result<Self, VmError> {
+        // Check call depth limit
+        if call_depth >= MAX_CALL_DEPTH {
+            return Err(VmError::CallDepthExceeded(call_depth, MAX_CALL_DEPTH));
+        }
+
+        // Check for reentrancy
+        if executing_contracts.contains(&context.contract_address) {
+            return Err(VmError::ReentrancyDetected(
+                context.contract_address.clone(),
+            ));
+        }
+
+        let mut executing = executing_contracts;
+        executing.insert(context.contract_address.clone());
+
+        Ok(Self {
+            stack: Vec::with_capacity(256),
+            pc: 0,
+            gas: context.gas_limit,
+            storage,
+            storage_changes: HashMap::new(),
+            transfers: Vec::new(),
+            code,
+            context,
+            halted: false,
+            return_value: None,
+            call_depth,
+            memory_pages: 0,
+            executing_contracts: executing,
+        })
+    }
+
+    /// Get current call depth
+    pub fn get_call_depth(&self) -> usize {
+        self.call_depth
+    }
+
+    /// Consume gas (helper method for memory expansion and other operations)
+    fn consume_gas(&mut self, amount: u64) -> Result<(), VmError> {
+        if self.gas < amount {
+            return Err(VmError::OutOfGas);
+        }
+        self.gas -= amount;
+        Ok(())
+    }
+
+    /// Expand memory and charge gas
+    pub fn expand_memory(&mut self, pages_needed: usize) -> Result<(), VmError> {
+        if pages_needed > self.memory_pages {
+            let new_pages = pages_needed - self.memory_pages;
+
+            if pages_needed > MAX_MEMORY_PAGES {
+                return Err(VmError::OutOfMemory(pages_needed, MAX_MEMORY_PAGES));
+            }
+
+            let gas_cost = new_pages as u64 * MEMORY_GAS_PER_PAGE;
+            self.consume_gas(gas_cost)?;
+            self.memory_pages = pages_needed;
+        }
+        Ok(())
     }
 
     /// Execute the bytecode
@@ -139,6 +260,7 @@ impl VM {
             storage_changes: self.storage_changes.clone(),
             transfers: self.transfers.clone(),
             error: None,
+            call_depth: self.call_depth,
         })
     }
 

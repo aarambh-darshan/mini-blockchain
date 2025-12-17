@@ -144,6 +144,18 @@
                             </p>
                         </div>
 
+                        <!-- Coinbase Maturity Warning -->
+                        <div
+                            class="rounded-lg border border-yellow-500/50 bg-yellow-500/10 p-3"
+                        >
+                            <p
+                                class="text-yellow-500 text-sm flex items-center gap-2"
+                            >
+                                <span>⏳</span> <strong>Note:</strong> Reward requires
+                                100 block confirmations before it can be spent
+                            </p>
+                        </div>
+
                         <div class="grid grid-cols-2 gap-4">
                             <div class="space-y-1">
                                 <p class="text-sm text-muted-foreground">

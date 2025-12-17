@@ -6,20 +6,36 @@
 //! - Locktime validation
 //! - Chain ID validation
 //! - Fee-based prioritization
+//! - Ancestor/descendant limits (Bitcoin-style)
 
 use crate::core::{Blockchain, Transaction, TransactionError, DEFAULT_CHAIN_ID};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 // =============================================================================
-// Configuration
+// Configuration (Bitcoin-like production values)
 // =============================================================================
 
-/// Default maximum mempool size
+/// Default maximum mempool transaction count
 pub const DEFAULT_MEMPOOL_SIZE: usize = 10000;
+
+/// Maximum mempool size in bytes (300MB like Bitcoin)
+pub const MAX_MEMPOOL_BYTES: usize = 300_000_000;
 
 /// Minimum fee bump for RBF (in percentage, e.g., 10 = 10% higher)
 pub const MIN_RBF_FEE_BUMP_PERCENT: u64 = 10;
+
+/// Maximum number of ancestor transactions (Bitcoin uses 25)
+pub const MAX_ANCESTORS: usize = 25;
+
+/// Maximum number of descendant transactions (Bitcoin uses 25)
+pub const MAX_DESCENDANTS: usize = 25;
+
+/// Maximum total size of ancestor transactions in bytes
+pub const MAX_ANCESTOR_SIZE: usize = 101_000;
+
+/// Maximum total size of descendant transactions in bytes
+pub const MAX_DESCENDANT_SIZE: usize = 101_000;
 
 // =============================================================================
 // Error Types
@@ -44,6 +60,16 @@ pub enum MempoolError {
     WrongChainId(u32, u32),
     #[error("Mempool full")]
     MempoolFull,
+    #[error("Too many ancestors: {0} (max: {1})")]
+    TooManyAncestors(usize, usize),
+    #[error("Too many descendants: {0} (max: {1})")]
+    TooManyDescendants(usize, usize),
+    #[error("Ancestor package too large: {0} bytes (max: {1})")]
+    AncestorPackageTooLarge(usize, usize),
+    #[error("Descendant package too large: {0} bytes (max: {1})")]
+    DescendantPackageTooLarge(usize, usize),
+    #[error("Mempool size limit exceeded: {0} bytes (max: {1})")]
+    MempoolSizeExceeded(usize, usize),
 }
 
 // =============================================================================
@@ -369,11 +395,7 @@ impl Mempool {
     /// Get mempool statistics
     pub fn stats(&self) -> MempoolStats {
         let total_fees: u64 = self.entries.values().map(|e| e.tx.fee).sum();
-        let total_size: usize = self
-            .entries
-            .values()
-            .map(|e| 10 + (e.tx.inputs.len() * 150) + (e.tx.outputs.len() * 34))
-            .sum();
+        let total_size: usize = self.entries.values().map(|e| e.tx.estimated_size()).sum();
 
         MempoolStats {
             tx_count: self.entries.len(),
@@ -392,6 +414,129 @@ impl Mempool {
                 .map(|e| e.fee_rate)
                 .unwrap_or(0),
         }
+    }
+
+    // =========================================================================
+    // Package Limits (Bitcoin-style ancestor/descendant limits)
+    // =========================================================================
+
+    /// Calculate the total size of the mempool in bytes
+    pub fn total_mempool_size(&self) -> usize {
+        self.entries.values().map(|e| e.tx.estimated_size()).sum()
+    }
+
+    /// Check if adding a transaction would exceed mempool size limits
+    pub fn check_mempool_size(&self, new_tx_size: usize) -> Result<(), MempoolError> {
+        let current_size = self.total_mempool_size();
+        let new_total = current_size + new_tx_size;
+        if new_total > MAX_MEMPOOL_BYTES {
+            return Err(MempoolError::MempoolSizeExceeded(
+                new_total,
+                MAX_MEMPOOL_BYTES,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Calculate all ancestors of a transaction (transactions this tx depends on)
+    /// Returns (ancestor count, total ancestor size)
+    pub fn calculate_ancestors(&self, tx: &Transaction) -> (usize, usize) {
+        let mut ancestors = HashSet::new();
+        let mut total_size = 0;
+        self.collect_ancestors_recursive(tx, &mut ancestors);
+
+        for ancestor_id in &ancestors {
+            if let Some(entry) = self.entries.get(ancestor_id) {
+                total_size += entry.tx.estimated_size();
+            }
+        }
+
+        (ancestors.len(), total_size)
+    }
+
+    /// Recursively collect all ancestor transaction IDs
+    fn collect_ancestors_recursive(&self, tx: &Transaction, ancestors: &mut HashSet<String>) {
+        for input in &tx.inputs {
+            // Check if this input spends from a mempool transaction
+            if self.entries.contains_key(&input.tx_id) && !ancestors.contains(&input.tx_id) {
+                ancestors.insert(input.tx_id.clone());
+                // Recursively collect ancestors of the parent
+                if let Some(parent_entry) = self.entries.get(&input.tx_id) {
+                    self.collect_ancestors_recursive(&parent_entry.tx, ancestors);
+                }
+            }
+        }
+    }
+
+    /// Calculate all descendants of a transaction (transactions that depend on this tx)
+    /// Returns (descendant count, total descendant size)
+    pub fn calculate_descendants(&self, tx_id: &str) -> (usize, usize) {
+        let mut descendants = HashSet::new();
+        let mut total_size = 0;
+        self.collect_descendants_recursive(tx_id, &mut descendants);
+
+        for descendant_id in &descendants {
+            if let Some(entry) = self.entries.get(descendant_id) {
+                total_size += entry.tx.estimated_size();
+            }
+        }
+
+        (descendants.len(), total_size)
+    }
+
+    /// Recursively collect all descendant transaction IDs
+    fn collect_descendants_recursive(&self, tx_id: &str, descendants: &mut HashSet<String>) {
+        for (entry_id, entry) in &self.entries {
+            // Check if this transaction spends from tx_id
+            let depends_on_tx = entry.tx.inputs.iter().any(|i| i.tx_id == tx_id);
+            if depends_on_tx && !descendants.contains(entry_id) {
+                descendants.insert(entry_id.clone());
+                // Recursively collect descendants
+                self.collect_descendants_recursive(entry_id, descendants);
+            }
+        }
+    }
+
+    /// Check package limits for a new transaction (ancestor and descendant limits)
+    pub fn check_package_limits(&self, tx: &Transaction) -> Result<(), MempoolError> {
+        // Check ancestor limits
+        let (ancestor_count, ancestor_size) = self.calculate_ancestors(tx);
+        if ancestor_count > MAX_ANCESTORS {
+            return Err(MempoolError::TooManyAncestors(
+                ancestor_count,
+                MAX_ANCESTORS,
+            ));
+        }
+        if ancestor_size > MAX_ANCESTOR_SIZE {
+            return Err(MempoolError::AncestorPackageTooLarge(
+                ancestor_size,
+                MAX_ANCESTOR_SIZE,
+            ));
+        }
+
+        // For each transaction this one spends from, check if adding this tx
+        // would cause the parent to exceed descendant limits
+        for input in &tx.inputs {
+            if self.entries.contains_key(&input.tx_id) {
+                let (desc_count, desc_size) = self.calculate_descendants(&input.tx_id);
+                // +1 because we're adding a new descendant
+                if desc_count + 1 > MAX_DESCENDANTS {
+                    return Err(MempoolError::TooManyDescendants(
+                        desc_count + 1,
+                        MAX_DESCENDANTS,
+                    ));
+                }
+                let new_tx_size = tx.estimated_size();
+                if desc_size + new_tx_size > MAX_DESCENDANT_SIZE {
+                    return Err(MempoolError::DescendantPackageTooLarge(
+                        desc_size + new_tx_size,
+                        MAX_DESCENDANT_SIZE,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Add a token transaction to the pool (skips UTXO validation)

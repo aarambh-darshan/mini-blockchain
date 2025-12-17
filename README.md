@@ -71,6 +71,20 @@
 | 🚀 **REST API** | HTTP API with Axum |
 | 🔌 **WebSocket** | Real-time updates |
 
+### Production-Grade Security (Bitcoin/Ethereum Inspired)
+| Feature | Value | Description |
+|---------|-------|-------------|
+| 🔒 **Coinbase Maturity** | 100 blocks | Mining rewards can't be spent until 100 confirmations |
+| 📦 **Block Size Limit** | 1 MB | Maximum block size (Bitcoin-style) |
+| 📄 **Transaction Size** | 100 KB | Maximum transaction size |
+| 📑 **Script System** | P2PKH, P2SH, MultiSig | Bitcoin-like output locking scripts |
+| 🔐 **Signature Hash Types** | ALL, NONE, SINGLE | SIGHASH types for flexible signing |
+| 👨‍👩‍👧 **Package Limits** | 25/25 | Max ancestors/descendants per tx chain |
+| 💾 **Mempool Size** | 300 MB | Maximum mempool memory usage |
+| 🔁 **Call Depth Limit** | 1024 | Prevents stack overflow attacks (EVM-style) |
+| 🧠 **Memory Gas Metering** | Linear | Gas charged for VM memory expansion |
+| 🛡️ **Reentrancy Protection** | Automatic | Prevents contract reentrancy attacks |
+
 ---
 
 ## 📦 Installation

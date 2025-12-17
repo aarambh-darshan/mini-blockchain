@@ -147,7 +147,7 @@
                 <Card.Description>View balance and UTXOs</Card.Description>
             </Card.Header>
             <Card.Content>
-                {#if selectedWallet}
+            {#if selectedWallet}
                     <div class="space-y-6">
                         <div class="space-y-2">
                             <p class="text-sm text-muted-foreground">Address</p>
@@ -161,17 +161,32 @@
 
                         <div class="text-center">
                             <p class="text-sm text-muted-foreground mb-1">
-                                Balance
+                                Spendable Balance
                             </p>
-                            <p class="text-4xl font-bold">
-                                {selectedWallet.balance}
+                            <p class="text-4xl font-bold text-green-500">
+                                {selectedWallet.spendable_balance}
                             </p>
                             <p class="text-sm text-muted-foreground">coins</p>
                         </div>
 
-                        <div class="flex justify-center">
+                        {#if selectedWallet.immature_balance > 0}
+                        <div class="text-center p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/30">
+                            <p class="text-xs text-yellow-500 mb-1">
+                                ⏳ Immature (Mining Rewards)
+                            </p>
+                            <p class="text-lg font-semibold text-yellow-500">
+                                {selectedWallet.immature_balance}
+                            </p>
+                            <p class="text-xs text-muted-foreground">Requires 100 block confirmations</p>
+                        </div>
+                        {/if}
+
+                        <div class="flex justify-center gap-2">
                             <Badge variant="secondary"
                                 >{selectedWallet.utxo_count} UTXOs</Badge
+                            >
+                            <Badge variant="outline"
+                                >Total: {selectedWallet.balance}</Badge
                             >
                         </div>
                     </div>
