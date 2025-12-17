@@ -33,6 +33,15 @@ pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 /// Default chain ID (for replay protection)
 pub const DEFAULT_CHAIN_ID: u32 = 1;
 
+/// Coinbase maturity - number of blocks before coinbase outputs can be spent (Bitcoin uses 100)
+pub const COINBASE_MATURITY: u64 = 100;
+
+/// Maximum transaction size in bytes (Bitcoin uses ~100KB)
+pub const MAX_TX_SIZE: usize = 100_000;
+
+/// Maximum number of signature operations per transaction
+pub const MAX_TX_SIGOPS: usize = 80_000;
+
 // =============================================================================
 // Error Types
 // =============================================================================
@@ -56,6 +65,12 @@ pub enum TransactionError {
     InsufficientRbfFee(u64, u64),
     #[error("Wrong chain ID: expected {0}, got {1}")]
     WrongChainId(u32, u32),
+    #[error("Coinbase not mature: need {0} more blocks")]
+    CoinbaseNotMature(u64),
+    #[error("Transaction too large: {0} bytes (max: {1})")]
+    TransactionTooLarge(usize, usize),
+    #[error("UTXO not found: {0}:{1}")]
+    UtxoNotFound(String, u32),
 }
 
 // =============================================================================
@@ -663,6 +678,9 @@ impl Transaction {
         block_time: u64,
         chain_id: u32,
     ) -> Result<(), TransactionError> {
+        // Check size limits first (fast check)
+        self.validate_size()?;
+
         // Basic validation
         if !self.is_valid()? {
             return Err(TransactionError::InvalidTransaction(
@@ -679,6 +697,48 @@ impl Transaction {
         }
 
         Ok(())
+    }
+
+    // =========================================================================
+    // Transaction Size (Production-grade)
+    // =========================================================================
+
+    /// Estimate the serialized size of this transaction in bytes
+    /// Based on typical Bitcoin transaction serialization:
+    /// - Base: 10 bytes (version, locktime, input/output counts)
+    /// - Input: ~148 bytes (outpoint 36 + script ~107 + sequence 4)
+    /// - Output: ~34 bytes (value 8 + script ~25)
+    pub fn estimated_size(&self) -> usize {
+        let base_size = 10; // version (4) + locktime (4) + counts (2)
+        let input_size: usize = self.inputs.len() * 148;
+        let output_size: usize = self.outputs.len() * 34;
+        let token_data_size = if self.token_data.is_some() { 200 } else { 0 };
+        let contract_data_size = if let Some(ref cd) = self.contract_data {
+            match cd {
+                ContractOperationType::Deploy { bytecode, .. } => 100 + bytecode.len(),
+                ContractOperationType::Call { args, .. } => 100 + args.len() * 8,
+            }
+        } else {
+            0
+        };
+
+        base_size + input_size + output_size + token_data_size + contract_data_size
+    }
+
+    /// Validate that transaction size is within limits
+    pub fn validate_size(&self) -> Result<(), TransactionError> {
+        let size = self.estimated_size();
+        if size > MAX_TX_SIZE {
+            return Err(TransactionError::TransactionTooLarge(size, MAX_TX_SIZE));
+        }
+        Ok(())
+    }
+
+    /// Calculate the virtual size (vsize) for fee calculation
+    /// In a SegWit implementation, this would account for witness discount
+    /// For now, it's the same as estimated_size()
+    pub fn virtual_size(&self) -> usize {
+        self.estimated_size()
     }
 }
 

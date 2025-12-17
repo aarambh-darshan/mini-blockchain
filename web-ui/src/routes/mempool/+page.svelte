@@ -54,7 +54,7 @@
         </div>
     {:else if mempool}
         <!-- Stats -->
-        <div class="grid gap-4 md:grid-cols-2">
+        <div class="grid gap-4 md:grid-cols-3">
             <Card.Root>
                 <Card.Header
                     class="flex flex-row items-center justify-between space-y-0 pb-2"
@@ -92,6 +92,38 @@
                             ? "Mine a block to confirm"
                             : "All transactions confirmed"}
                     </p>
+                </Card.Content>
+            </Card.Root>
+
+            <!-- Package Limits Info -->
+            <Card.Root>
+                <Card.Header
+                    class="flex flex-row items-center justify-between space-y-0 pb-2"
+                >
+                    <Card.Title class="text-sm font-medium"
+                        >Package Limits</Card.Title
+                    >
+                    <span class="text-muted-foreground">📦</span>
+                </Card.Header>
+                <Card.Content>
+                    <div class="space-y-1 text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-muted-foreground"
+                                >Max Ancestors:</span
+                            >
+                            <span class="font-mono">25</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-muted-foreground"
+                                >Max Descendants:</span
+                            >
+                            <span class="font-mono">25</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-muted-foreground">Max Size:</span>
+                            <span class="font-mono">300 MB</span>
+                        </div>
+                    </div>
                 </Card.Content>
             </Card.Root>
         </div>

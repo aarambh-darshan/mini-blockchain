@@ -31,6 +31,8 @@ export interface WalletResponse {
 export interface BalanceResponse {
     address: string;
     balance: number;
+    spendable_balance: number;
+    immature_balance: number;
     utxo_count: number;
 }
 

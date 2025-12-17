@@ -71,6 +71,8 @@ pub struct MineResponse {
 pub struct BalanceResponse {
     pub address: String,
     pub balance: u64,
+    pub spendable_balance: u64,
+    pub immature_balance: u64,
     pub utxo_count: usize,
 }
 
@@ -440,12 +442,20 @@ pub async fn get_wallet_balance(
     Path(address): Path<String>,
 ) -> Json<BalanceResponse> {
     let chain = state.blockchain.read().await;
+
+    // Get all UTXOs (including immature coinbase)
     let utxos = chain.get_utxos_for_address(&address);
     let balance: u64 = utxos.iter().map(|u| u.output.amount).sum();
+
+    // Get only spendable UTXOs (mature coinbase only)
+    let spendable_balance = chain.get_spendable_balance(&address);
+    let immature_balance = chain.get_immature_balance(&address);
 
     Json(BalanceResponse {
         address,
         balance,
+        spendable_balance,
+        immature_balance,
         utxo_count: utxos.len(),
     })
 }
@@ -865,9 +875,13 @@ pub async fn get_multisig_balance(
     match manager.get_balance(&address, &blockchain) {
         Some(balance) => {
             let utxos = blockchain.get_utxos_for_address(&address);
+            let spendable_balance = blockchain.get_spendable_balance(&address);
+            let immature_balance = blockchain.get_immature_balance(&address);
             Ok(Json(BalanceResponse {
                 address,
                 balance,
+                spendable_balance,
+                immature_balance,
                 utxo_count: utxos.len(),
             }))
         }
