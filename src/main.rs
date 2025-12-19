@@ -9,7 +9,7 @@ use mini_blockchain::contract::{Compiler, ContractManager};
 use mini_blockchain::core::Blockchain;
 use mini_blockchain::mining::Mempool;
 use mini_blockchain::multisig::MultisigManager;
-use mini_blockchain::network::{Node, NodeConfig};
+use mini_blockchain::network::{Node, NodeConfig, PeerManager};
 use mini_blockchain::storage::{Storage, StorageConfig};
 use mini_blockchain::token::TokenManager;
 use mini_blockchain::wallet::WalletManager;
@@ -177,11 +177,19 @@ enum NodeCommands {
 
 #[derive(Subcommand)]
 enum ApiCommands {
-    /// Start the REST API server
+    /// Start the REST API server (optionally with embedded P2P node)
     Start {
-        /// Port to listen on
+        /// Port to listen on for REST API
         #[arg(short, long, default_value = "3000")]
         port: u16,
+
+        /// Enable P2P node on this port (optional)
+        #[arg(long)]
+        p2p_port: Option<u16>,
+
+        /// Initial peers to connect to (comma-separated, requires --p2p-port)
+        #[arg(long)]
+        peers: Option<String>,
     },
 }
 
@@ -233,7 +241,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle node commands with tokio runtime
     if let Commands::Node { ref action } = cli.command {
-        return run_node_command(action, &cli.data_dir);
+        return run_node_command(action, &cli.data_dir)
+            .map_err(|e| -> Box<dyn std::error::Error> { e });
     }
 
     // Handle API commands with tokio runtime
@@ -306,7 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run_node_command(
     action: &NodeCommands,
     data_dir: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let rt = tokio::runtime::Runtime::new()?;
 
     rt.block_on(async {
@@ -353,7 +362,7 @@ fn run_node_command(
             }
         }
 
-        Ok::<(), Box<dyn std::error::Error>>(())
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })?;
 
     Ok(())
@@ -367,7 +376,11 @@ fn run_api_command(
 
     rt.block_on(async {
         match action {
-            ApiCommands::Start { port } => {
+            ApiCommands::Start {
+                port,
+                p2p_port,
+                peers,
+            } => {
                 // Initialize storage
                 let storage_config = StorageConfig {
                     data_dir: data_dir.clone(),
@@ -421,16 +434,24 @@ fn run_api_command(
                     Arc::new(RwLock::new(TokenManager::new()))
                 };
 
+                // Create PeerManager if P2P is enabled
+                let peer_manager: Option<Arc<PeerManager>> = if p2p_port.is_some() {
+                    Some(Arc::new(PeerManager::new(p2p_port.unwrap())))
+                } else {
+                    None
+                };
+
                 // Create API state
                 let state = ApiState {
-                    blockchain,
-                    mempool,
-                    storage,
+                    blockchain: blockchain.clone(),
+                    mempool: mempool.clone(),
+                    storage: storage.clone(),
                     wallet_manager,
                     contract_manager,
                     ws_broadcaster,
                     multisig_manager,
                     token_manager,
+                    peer_manager: peer_manager.clone(),
                 };
 
                 // Clone state for shutdown handler
@@ -443,6 +464,49 @@ fn run_api_command(
                 // Start server
                 let addr = format!("0.0.0.0:{}", port);
                 println!("🚀 REST API server starting on http://localhost:{}", port);
+
+                // Optionally start P2P node
+                if let Some(p2p_port) = p2p_port {
+                    let bootstrap_peers: Vec<String> = peers
+                        .clone()
+                        .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
+                        .unwrap_or_default();
+
+                    let config = NodeConfig {
+                        port: *p2p_port,
+                        bootstrap_peers: bootstrap_peers.clone(),
+                        data_dir: data_dir.clone(),
+                    };
+
+                    println!("🌐 P2P node enabled on port {}", p2p_port);
+                    if !bootstrap_peers.is_empty() {
+                        println!("   Connecting to peers: {:?}", bootstrap_peers);
+                    }
+                    println!("   Blocks mined via API will be broadcast to peers!");
+
+                    // Start P2P node with SHARED blockchain, mempool, and peer_manager
+                    let p2p_blockchain = blockchain.clone();
+                    let p2p_mempool = mempool.clone();
+                    let p2p_storage = storage.clone();
+                    let p2p_peer_manager = peer_manager.clone().unwrap();
+
+                    tokio::spawn(async move {
+                        // Create node with shared state - pass the same peer_manager
+                        let mut node = Node::new_with_shared_and_peer_manager(
+                            config,
+                            p2p_blockchain,
+                            p2p_mempool,
+                            p2p_storage,
+                            p2p_peer_manager,
+                        );
+
+                        log::info!("P2P node started with shared blockchain");
+                        if let Err(e) = node.start().await {
+                            log::error!("P2P node error: {}", e);
+                        }
+                    });
+                }
+
                 println!();
                 println!("📖 Available endpoints:");
                 println!("   GET  /health                      - Health check");

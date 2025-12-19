@@ -1,8 +1,11 @@
 //! TCP server and connection handling
 //!
 //! Accepts incoming peer connections and manages the network server.
+//! Production-grade features:
+//! - SHA-256 message checksums for integrity
+//! - Length-prefixed framing with magic bytes
 
-use crate::network::message::{Handshake, Message, MAGIC};
+use crate::network::message::{Handshake, Message, MAGIC, HEADER_SIZE, MAX_MESSAGE_SIZE};
 use crate::network::peer::{PeerError, PeerHandle, PeerManager};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::sink::SinkExt;
@@ -13,8 +16,31 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-/// Message codec for length-prefixed framing
-pub struct MessageCodec;
+/// Message codec for length-prefixed framing with checksums
+/// 
+/// Header format (24 bytes):
+/// - Magic (4 bytes): Network identification
+/// - Command (12 bytes): Message type name (null-padded)
+/// - Length (4 bytes): Payload length (big-endian)
+/// - Checksum (4 bytes): First 4 bytes of double SHA-256 of payload
+pub struct MessageCodec {
+    /// Whether to verify checksums (can be disabled for testing)
+    pub verify_checksum: bool,
+}
+
+impl MessageCodec {
+    pub fn new() -> Self {
+        Self {
+            verify_checksum: true,
+        }
+    }
+}
+
+impl Default for MessageCodec {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Encoder<Message> for MessageCodec {
     type Error = std::io::Error;
@@ -24,11 +50,27 @@ impl Encoder<Message> for MessageCodec {
             .to_bytes()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-        // Magic (4) + Length (4) + Data
-        dst.reserve(8 + data.len());
-        dst.put_slice(&MAGIC);
-        dst.put_u32(data.len() as u32);
-        dst.put_slice(&data);
+        // Check message size limit
+        if data.len() > MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Message too large: {} bytes", data.len()),
+            ));
+        }
+
+        // Compute checksum (first 4 bytes of double SHA-256)
+        let checksum = Message::compute_checksum(&data);
+
+        // Get command name
+        let command = item.command();
+
+        // Header: Magic (4) + Command (12) + Length (4) + Checksum (4) = 24 bytes
+        dst.reserve(HEADER_SIZE + data.len());
+        dst.put_slice(&MAGIC);           // 4 bytes
+        dst.put_slice(&command);         // 12 bytes
+        dst.put_u32(data.len() as u32);  // 4 bytes
+        dst.put_slice(&checksum);        // 4 bytes
+        dst.put_slice(&data);            // payload
 
         Ok(())
     }
@@ -39,8 +81,8 @@ impl Decoder for MessageCodec {
     type Error = std::io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        // Need at least header
-        if src.len() < 8 {
+        // Need at least header (24 bytes)
+        if src.len() < HEADER_SIZE {
             return Ok(None);
         }
 
@@ -52,19 +94,48 @@ impl Decoder for MessageCodec {
             ));
         }
 
-        // Get length
-        let len = u32::from_be_bytes([src[4], src[5], src[6], src[7]]) as usize;
+        // Extract command (bytes 4-16) - for logging
+        let _command = &src[4..16];
+
+        // Get length (bytes 16-20)
+        let len = u32::from_be_bytes([src[16], src[17], src[18], src[19]]) as usize;
+
+        // Check message size limit
+        if len > MAX_MESSAGE_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Message too large: {} bytes", len),
+            ));
+        }
+
+        // Get expected checksum (bytes 20-24)
+        let expected_checksum = [src[20], src[21], src[22], src[23]];
 
         // Check if we have full message
-        if src.len() < 8 + len {
+        if src.len() < HEADER_SIZE + len {
             return Ok(None);
         }
 
         // Skip header
-        src.advance(8);
+        src.advance(HEADER_SIZE);
 
         // Extract message data
         let data = src.split_to(len);
+
+        // Verify checksum
+        if self.verify_checksum {
+            let actual_checksum = Message::compute_checksum(&data);
+            if actual_checksum != expected_checksum {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Checksum mismatch: expected {:02x}{:02x}{:02x}{:02x}, got {:02x}{:02x}{:02x}{:02x}",
+                        expected_checksum[0], expected_checksum[1], expected_checksum[2], expected_checksum[3],
+                        actual_checksum[0], actual_checksum[1], actual_checksum[2], actual_checksum[3]
+                    ),
+                ));
+            }
+        }
 
         // Deserialize
         let msg = Message::from_bytes(&data)
@@ -123,7 +194,7 @@ pub async fn handle_connection(
     message_tx: mpsc::Sender<(SocketAddr, Message)>,
     outbound: bool,
 ) -> Result<(), PeerError> {
-    let framed = Framed::new(stream, MessageCodec);
+    let framed = Framed::new(stream, MessageCodec::new());
     let (mut writer, mut reader) = framed.split();
 
     // Create channel for sending to this peer
@@ -183,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_message_codec() {
-        let mut codec = MessageCodec;
+        let mut codec = MessageCodec::new();
         let msg = Message::Ping(12345);
 
         let mut buf = BytesMut::new();
@@ -195,5 +266,37 @@ mod tests {
         } else {
             panic!("Wrong message type");
         }
+    }
+
+    #[test]
+    fn test_checksum_verification() {
+        let mut codec = MessageCodec::new();
+        let msg = Message::Ping(12345);
+
+        let mut buf = BytesMut::new();
+        codec.encode(msg, &mut buf).unwrap();
+
+        // Corrupt the checksum (bytes 20-23)
+        buf[20] ^= 0xFF;
+
+        // Should fail to decode
+        let result = codec.decode(&mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_checksum_disabled() {
+        let mut codec = MessageCodec { verify_checksum: false };
+        let msg = Message::Ping(12345);
+
+        let mut buf = BytesMut::new();
+        codec.encode(msg, &mut buf).unwrap();
+
+        // Corrupt the checksum
+        buf[20] ^= 0xFF;
+
+        // Should still decode with verification disabled
+        let result = codec.decode(&mut buf);
+        assert!(result.is_ok());
     }
 }

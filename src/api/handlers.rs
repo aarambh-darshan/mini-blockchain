@@ -8,6 +8,7 @@ use crate::core::{
 };
 use crate::mining::{Mempool, Miner};
 use crate::multisig::{MultisigConfig, MultisigManager, MultisigSignature};
+use crate::network::peer::PeerManager;
 use crate::storage::Storage;
 use crate::token::TokenManager;
 use crate::wallet::WalletManager;
@@ -31,6 +32,8 @@ pub struct ApiState {
     pub ws_broadcaster: Arc<WsBroadcaster>,
     pub multisig_manager: Arc<RwLock<MultisigManager>>,
     pub token_manager: Arc<RwLock<TokenManager>>,
+    /// Optional P2P peer manager for broadcasting blocks/transactions
+    pub peer_manager: Option<Arc<PeerManager>>,
 }
 
 // ============================================================================
@@ -272,70 +275,116 @@ pub async fn mine_block(
     State(state): State<ApiState>,
     Json(req): Json<MineRequest>,
 ) -> Result<Json<MineResponse>, (StatusCode, Json<ApiError>)> {
-    let mut chain = state.blockchain.write().await;
-
-    // Get transactions from mempool
-    let transactions = {
+    // Step 1: Get transactions from mempool and snapshot chain state (quick reads)
+    let (transactions, current_height, previous_hash, difficulty) = {
+        let chain = state.blockchain.read().await;
         let mempool = state.mempool.read().await;
-        mempool.get_transactions(10)
+
+        let transactions = mempool.get_transactions(10);
+        let height = chain.height();
+        let prev_hash = chain.latest_block().hash.clone();
+        let diff = chain.difficulty;
+
+        (transactions, height, prev_hash, diff)
     };
+    // Locks are now released!
 
     // Collect tx IDs for cleanup after mining
     let tx_ids: Vec<String> = transactions.iter().map(|t| t.id.clone()).collect();
+    let miner_address = req.miner_address.clone();
 
-    let miner = Miner::new(&req.miner_address);
-
-    match miner.mine_block(&mut chain, transactions) {
-        Ok((block, stats)) => {
-            // Create block info for response and WebSocket
-            let block_info = BlockInfo {
-                index: block.index,
-                hash: block.hash.clone(),
-                previous_hash: block.header.previous_hash.clone(),
-                merkle_root: block.header.merkle_root.clone(),
-                timestamp: block.header.timestamp.to_rfc3339(),
-                difficulty: block.header.difficulty,
-                nonce: block.header.nonce,
-                transactions: block.transactions.len(),
-            };
-            let reward = block.mining_reward();
-
-            drop(chain);
-
-            // Remove mined transactions from mempool
-            {
-                let mut mempool = state.mempool.write().await;
-                mempool.remove_transactions(&tx_ids);
-            }
-
-            // Save blockchain
-            let chain = state.blockchain.read().await;
-            if let Err(e) = state.storage.save(&chain) {
-                log::error!("Failed to save blockchain: {}", e);
-            }
-
-            // Broadcast BlockMined event to WebSocket clients
-            state
-                .ws_broadcaster
-                .broadcast(crate::api::websocket::WsEvent::BlockMined {
-                    block: block_info.clone(),
-                    reward,
-                });
-
-            Ok(Json(MineResponse {
-                block: block_info,
-                reward,
-                time_ms: stats.time_ms,
-                attempts: stats.hash_attempts,
-            }))
-        }
-        Err(e) => Err((
+    // Step 2: Run CPU-intensive mining in a blocking task (NO LOCKS HELD)
+    let mining_result = tokio::task::spawn_blocking(move || {
+        let miner = Miner::new(&miner_address);
+        miner.mine_block_detached(current_height, previous_hash, difficulty, transactions)
+    })
+    .await
+    .map_err(|e| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError {
-                error: format!("Mining failed: {}", e),
+                error: format!("Mining task failed: {}", e),
             }),
-        )),
+        )
+    })?;
+
+    let (block, stats) = mining_result;
+
+    // Step 3: Briefly acquire write lock to add the mined block
+    {
+        let mut chain = state.blockchain.write().await;
+
+        // Verify block is still valid (chain might have changed during mining)
+        if chain.height() != current_height {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "Chain changed during mining, please retry".to_string(),
+                }),
+            ));
+        }
+
+        if let Err(e) = chain.add_block(block.clone()) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("Failed to add block: {}", e),
+                }),
+            ));
+        }
     }
+    // Write lock released!
+
+    // Create block info for response and WebSocket
+    let block_info = BlockInfo {
+        index: block.index,
+        hash: block.hash.clone(),
+        previous_hash: block.header.previous_hash.clone(),
+        merkle_root: block.header.merkle_root.clone(),
+        timestamp: block.header.timestamp.to_rfc3339(),
+        difficulty: block.header.difficulty,
+        nonce: block.header.nonce,
+        transactions: block.transactions.len(),
+    };
+    let reward = block.mining_reward();
+
+    // Step 4: Cleanup and notify (quick operations)
+    {
+        let mut mempool = state.mempool.write().await;
+        mempool.remove_transactions(&tx_ids);
+    }
+
+    // Save blockchain
+    {
+        let chain = state.blockchain.read().await;
+        if let Err(e) = state.storage.save(&chain) {
+            log::error!("Failed to save blockchain: {}", e);
+        }
+    }
+
+    // Broadcast BlockMined event to WebSocket clients
+    state
+        .ws_broadcaster
+        .broadcast(crate::api::websocket::WsEvent::BlockMined {
+            block: block_info.clone(),
+            reward,
+        });
+
+    // Broadcast new block to P2P network (if connected)
+    if let Some(ref peer_manager) = state.peer_manager {
+        use crate::network::message::Message;
+        log::info!("Broadcasting mined block {} to P2P network", block.index);
+        peer_manager
+            .broadcast(Message::NewBlock(block.clone()))
+            .await;
+    }
+
+    Ok(Json(MineResponse {
+        block: block_info,
+        reward,
+        time_ms: stats.time_ms,
+        attempts: stats.hash_attempts,
+    }))
 }
 
 /// GET /api/mempool - Get pending transactions

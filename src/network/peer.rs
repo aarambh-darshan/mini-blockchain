@@ -504,14 +504,44 @@ impl PeerManager {
         let outbound_count = peers.values().filter(|p| p.outbound).count();
         let inbound_count = peers.values().filter(|p| !p.outbound).count();
 
+        // Check subnet diversity (max 2 peers per /16 subnet for eclipse protection)
+        let subnet = Self::get_subnet(&addr);
+        let same_subnet_count = peers
+            .keys()
+            .filter(|a| Self::get_subnet(a) == subnet)
+            .count();
+
+        if same_subnet_count >= 2 {
+            log::debug!("Rejecting peer {} - too many from same subnet", addr);
+            return Err(PeerError::MaxPeersReached);
+        }
+
         if outbound && outbound_count >= MAX_OUTBOUND {
             return Err(PeerError::MaxPeersReached);
         }
+
+        // For inbound connections at capacity, try to evict a peer
         if !outbound && inbound_count >= MAX_INBOUND {
-            return Err(PeerError::MaxPeersReached);
+            if let Some(evicted) = Self::select_eviction_candidate(&peers, false) {
+                log::info!("Evicting peer {} to make room for {}", evicted, addr);
+                peers.remove(&evicted);
+                let mut handles = self.handles.write().await;
+                handles.remove(&evicted);
+            } else {
+                return Err(PeerError::MaxPeersReached);
+            }
         }
+
         if peers.len() >= MAX_PEERS {
-            return Err(PeerError::MaxPeersReached);
+            // Try to evict any peer
+            if let Some(evicted) = Self::select_eviction_candidate(&peers, true) {
+                log::info!("Evicting peer {} to make room for {}", evicted, addr);
+                peers.remove(&evicted);
+                let mut handles = self.handles.write().await;
+                handles.remove(&evicted);
+            } else {
+                return Err(PeerError::MaxPeersReached);
+            }
         }
 
         peers.insert(addr, PeerInfo::new(addr, outbound));
@@ -528,6 +558,39 @@ impl PeerManager {
 
         log::info!("Added peer: {} (outbound: {})", addr, outbound);
         Ok(())
+    }
+
+    /// Get /16 subnet for an address (eclipse attack protection)
+    fn get_subnet(addr: &SocketAddr) -> String {
+        match addr.ip() {
+            std::net::IpAddr::V4(ip) => {
+                let octets = ip.octets();
+                format!("{}.{}", octets[0], octets[1])
+            }
+            std::net::IpAddr::V6(ip) => {
+                // For IPv6, use first 4 bytes
+                let segments = ip.segments();
+                format!("{}:{}", segments[0], segments[1])
+            }
+        }
+    }
+
+    /// Select a peer to evict (lowest score, oldest connection)
+    fn select_eviction_candidate(
+        peers: &HashMap<SocketAddr, PeerInfo>,
+        include_outbound: bool,
+    ) -> Option<SocketAddr> {
+        peers
+            .iter()
+            .filter(|(_, p)| include_outbound || !p.outbound)
+            .min_by(|(_, a), (_, b)| {
+                // First compare by score (lower is worse)
+                a.score
+                    .cmp(&b.score)
+                    // Then by connection time (older is worse)
+                    .then_with(|| a.connected_at.cmp(&b.connected_at))
+            })
+            .map(|(addr, _)| *addr)
     }
 
     /// Remove a peer

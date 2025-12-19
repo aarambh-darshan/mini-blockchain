@@ -225,30 +225,50 @@ pub fn public_key_to_address(public_key: &PublicKey) -> String;  // Base58Check
 
 ### P2P Protocol (`src/network/`)
 
+**Production-grade P2P networking** with Bitcoin-inspired protocols:
+
 ```
-┌────────────────────────────────────────────────────────────┐
-│                    NETWORK NODE                            │
-├──────────────┬─────────────┬─────────────┬────────────────────┤
-│  PeerManager │   Server    │  ChainSync  │   MessageCodec   │
-│  (scoring)   │  (TCP)      │  (sync)     │   (framing)      │
-└──────────────┴─────────────┴─────────────┴────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           NETWORK NODE                                    │
+├────────────┬────────────┬────────────┬────────────┬────────────────────────┤
+│ PeerManager│  Server    │ ChainSync  │  AddrMan   │   Discovery          │
+│ (scoring,  │  (TCP,     │ (parallel  │ (bucketed  │   (DNS seed,         │
+│  eviction) │  checksum) │  download) │  storage)  │    addr exchange)    │
+├────────────┴────────────┴────────────┴────────────┴────────────────────────┤
+│        MessageCodec: 24-byte header with SHA-256 checksum                 │
+│        UPnP NAT Traversal | Parallel Block Sync | Eclipse Resistance     │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Protocol Constants:**
-| Constant | Value |
-|----------|-------|
-| `PROTOCOL_VERSION` | 70001 |
-| `MAX_MESSAGE_SIZE` | 16 MB |
-| `MAX_BLOCKS_PER_REQUEST` | 500 |
-| `MAX_HEADERS_PER_REQUEST` | 2000 |
+**Protocol Features:**
+| Feature | Description |
+|---------|-------------|
+| **Message Checksums** | SHA-256 double-hash for integrity |
+| **24-byte Header** | Magic (4) + Command (12) + Length (4) + Checksum (4) |
+| **Peer Discovery** | DNS seeds + GetAddr/Addr exchange |
+| **Address Manager** | Bitcoin-style new/tried tables with bucket hashing |
+| **Connection Limits** | MAX_PEERS=125, MAX_OUTBOUND=8, MAX_INBOUND=117 |
+| **Peer Scoring** | Reputation-based with ban scores |
+| **Subnet Diversity** | Eclipse attack resistance |
+| **NAT Traversal** | UPnP port mapping with auto-renewal |
+| **Parallel Sync** | Download blocks from multiple peers |
 
 **Message Types:**
-- `Version` / `VerAck` - Handshake
-- `NewBlock` / `NewTransaction` - Gossip
-- `GetBlocks` / `Blocks` - Sync
-- `GetHeaders` / `Headers` - Headers-first sync
-- `Inv` / `GetData` - Inventory relay
-- `Ping` / `Pong` - Keep-alive
+- `Version` / `VerAck` - Protocol handshake
+- `NewBlock` / `NewTransaction` - Block/tx gossip propagation
+- `GetBlocks` / `Blocks` - Chain synchronization
+- `GetAddr` / `Addr` - Peer discovery
+- `Ping` / `Pong` - Connection keep-alive
+- `Reject` - Error reporting with reason codes
+
+**API + P2P Integration:**
+Run API server with embedded P2P node:
+```bash
+cargo run -- api start --port 3000 --p2p-port 8333 --peers 127.0.0.1:8334
+```
+- Shared blockchain instance between API and P2P
+- Blocks mined via API auto-broadcast to network
+- Real-time sync with connected peers
 
 ---
 
