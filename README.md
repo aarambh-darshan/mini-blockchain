@@ -45,10 +45,16 @@
 ### Network & Security
 | Feature | Description |
 |---------|-------------|
-| 🌐 **P2P Networking** | Protocol v70001 with version handshake |
+| 🌐 **P2P Networking** | TCP with 24-byte header, SHA-256 checksums |
+| 🔗 **API + P2P Integration** | Run API with embedded P2P node for block broadcasting |
+| 📡 **Block Propagation** | Real-time gossip with relay to all peers |
+| 🔍 **Peer Discovery** | DNS seeds + GetAddr/Addr exchange |
+| 🗂️ **Address Manager** | Bitcoin-style new/tried tables |
 | 🚫 **Peer Scoring** | Misbehavior detection and banning |
 | 🛑 **Rate Limiting** | DOS protection (1000 msg/min) |
-| 📦 **Compact Blocks** | BIP-152 style efficient relay |
+| 🌍 **NAT Traversal** | UPnP port mapping with auto-renewal |
+| ⚡ **Parallel Sync** | Download blocks from multiple peers |
+| 🛡️ **Eclipse Resistance** | Subnet diversity for connection selection |
 
 ### Storage & Performance
 | Feature | Description |
@@ -202,11 +208,11 @@ blockchain export --output backup.json
 | `node status` | Show node connection info |
 
 ```bash
-# Terminal 1: Start first node
-blockchain node start --port 8333
+# Terminal 1: Start first standalone P2P node
+RUST_LOG=info blockchain node start --port 8334
 
-# Terminal 2: Start second node and connect to first
-blockchain node start --port 8334 --peers 127.0.0.1:8333
+# Terminal 2: Start second node and connect
+RUST_LOG=info blockchain node start --port 8335 --peers 127.0.0.1:8334
 ```
 
 ### REST API
@@ -215,18 +221,23 @@ blockchain node start --port 8334 --peers 127.0.0.1:8333
 |---------|-------------|
 | `api start` | Start REST API on default port (3000) |
 | `api start --port PORT` | Start on custom port |
+| `api start --p2p-port PORT` | **NEW:** Enable embedded P2P node |
+| `api start --peers HOST:PORT` | Connect to P2P network |
 
 ```bash
-# Start API server
+# API-only mode (no P2P)
 blockchain api start --port 3000
+
+# 🆕 API + P2P mode (blocks mined via UI broadcast to network!)
+RUST_LOG=info blockchain api start --port 3000 --p2p-port 8333 --peers 127.0.0.1:8334
 
 # Test endpoints with curl
 curl http://localhost:3000/api/chain
 curl http://localhost:3000/api/wallets/1ABC.../balance
 curl -X POST http://localhost:3000/api/mine -H "Content-Type: application/json" -d '{"miner_address": "1ABC..."}'
-curl http://localhost:3000/api/contracts
-curl -X POST http://localhost:3000/api/contracts -H "Content-Type: application/json" -d '{"source": "PUSH 42\nRETURN"}'
 ```
+
+> **💡 Tip:** With `--p2p-port`, blocks mined via the Web UI are automatically broadcast to all connected P2P nodes in real-time!
 
 ### Web UI
 

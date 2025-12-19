@@ -43,11 +43,13 @@ pub struct Node {
     pub chain_sync: Arc<ChainSync>,
     pub storage: Arc<Storage>,
     shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Message channel sender - set after start() is called
+    message_tx: Option<mpsc::Sender<(SocketAddr, Message)>>,
 }
 
 impl Node {
     /// Create a new node
-    pub async fn new(config: NodeConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(config: NodeConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Initialize storage
         let storage_config = crate::storage::StorageConfig {
             data_dir: config.data_dir.clone(),
@@ -78,11 +80,65 @@ impl Node {
             chain_sync,
             storage,
             shutdown_tx: None,
+            message_tx: None,
         })
     }
 
+    /// Create a new node with shared blockchain and mempool (for API integration)
+    /// This allows the API server and P2P node to share the same blockchain instance,
+    /// so blocks mined via API are automatically visible to the P2P network.
+    pub fn new_with_shared(
+        config: NodeConfig,
+        blockchain: Arc<RwLock<Blockchain>>,
+        mempool: Arc<RwLock<Mempool>>,
+        storage: Arc<Storage>,
+    ) -> Self {
+        let peer_manager = Arc::new(PeerManager::new(config.port));
+        let chain_sync = Arc::new(ChainSync::new(blockchain.clone(), peer_manager.clone()));
+
+        Self {
+            config,
+            blockchain,
+            mempool,
+            peer_manager,
+            chain_sync,
+            storage,
+            shutdown_tx: None,
+            message_tx: None,
+        }
+    }
+
+    /// Create a new node with shared blockchain, mempool, AND peer_manager
+    /// This is the full integration mode - API and P2P share everything including
+    /// the peer manager, so blocks mined via API are automatically broadcast.
+    pub fn new_with_shared_and_peer_manager(
+        config: NodeConfig,
+        blockchain: Arc<RwLock<Blockchain>>,
+        mempool: Arc<RwLock<Mempool>>,
+        storage: Arc<Storage>,
+        peer_manager: Arc<PeerManager>,
+    ) -> Self {
+        let chain_sync = Arc::new(ChainSync::new(blockchain.clone(), peer_manager.clone()));
+
+        Self {
+            config,
+            blockchain,
+            mempool,
+            peer_manager,
+            chain_sync,
+            storage,
+            shutdown_tx: None,
+            message_tx: None,
+        }
+    }
+
+    /// Get the peer manager (for broadcasting blocks from external sources)
+    pub fn peer_manager(&self) -> Arc<PeerManager> {
+        self.peer_manager.clone()
+    }
+
     /// Start the node
-    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         self.shutdown_tx = Some(shutdown_tx);
 
@@ -90,8 +146,9 @@ impl Node {
         let server = Server::bind(self.config.port).await?;
         log::info!("Node started on port {}", self.config.port);
 
-        // Create message channel
+        // Create message channel and store it for use by connect_to
         let (message_tx, mut message_rx) = mpsc::channel::<(SocketAddr, Message)>(1000);
+        self.message_tx = Some(message_tx.clone());
 
         // Clone for tasks
         let peer_manager = self.peer_manager.clone();
@@ -169,8 +226,14 @@ impl Node {
             )
         };
 
-        // Create message channel for this connection
-        let (message_tx, _) = mpsc::channel::<(SocketAddr, Message)>(100);
+        // Use the stored message_tx so messages go to the main handler
+        // If start() hasn't been called yet, fall back to a dummy channel
+        let message_tx = self.message_tx.clone().unwrap_or_else(|| {
+            log::warn!(
+                "connect_to called before start() - messages from this peer won't be processed"
+            );
+            mpsc::channel::<(SocketAddr, Message)>(100).0
+        });
 
         let pm = self.peer_manager.clone();
         tokio::spawn(async move {
@@ -393,6 +456,32 @@ impl Node {
                     version,
                     from
                 );
+            }
+
+            Message::GetAddr => {
+                // Respond with known peer addresses
+                log::debug!("GetAddr from {}", from);
+                let peers = self.peer_manager.get_known_peers().await;
+                let addrs: Vec<_> = peers
+                    .iter()
+                    .filter_map(|p| {
+                        crate::network::message::NetAddr::from_addr_str(
+                            p,
+                            crate::network::message::ServiceFlags::NODE_NETWORK,
+                        )
+                    })
+                    .take(1000)
+                    .collect();
+                if let Err(e) = self.peer_manager.send_to(&from, Message::Addr(addrs)).await {
+                    log::warn!("Failed to send Addr: {}", e);
+                }
+            }
+
+            Message::Addr(addrs) => {
+                // Add received addresses to known peers
+                log::debug!("Received {} addresses from {}", addrs.len(), from);
+                let addr_strings: Vec<String> = addrs.iter().map(|a| a.to_addr_string()).collect();
+                self.peer_manager.add_known_peers(addr_strings).await;
             }
         }
     }

@@ -35,6 +35,67 @@ pub const MAX_BLOCKS_PER_REQUEST: u32 = 500;
 /// Maximum headers per GetHeaders request  
 pub const MAX_HEADERS_PER_REQUEST: u32 = 2000;
 
+/// Maximum addresses per Addr message
+pub const MAX_ADDR_PER_MESSAGE: usize = 1000;
+
+/// Header size: Magic(4) + Command(12) + Length(4) + Checksum(4)
+pub const HEADER_SIZE: usize = 24;
+
+// =============================================================================
+// Network Address (for peer discovery)
+// =============================================================================
+
+/// Network address with metadata for peer discovery
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetAddr {
+    /// Unix timestamp of last activity
+    pub timestamp: i64,
+    /// Services offered by this node
+    pub services: ServiceFlags,
+    /// IP address (IPv4 or IPv6 string)
+    pub ip: String,
+    /// Port number
+    pub port: u16,
+}
+
+impl NetAddr {
+    pub fn new(ip: String, port: u16, services: ServiceFlags) -> Self {
+        Self {
+            timestamp: chrono::Utc::now().timestamp(),
+            services,
+            ip,
+            port,
+        }
+    }
+
+    /// Create from socket address string
+    pub fn from_addr_str(addr: &str, services: ServiceFlags) -> Option<Self> {
+        let parts: Vec<&str> = addr.rsplitn(2, ':').collect();
+        if parts.len() == 2 {
+            let port = parts[0].parse().ok()?;
+            let ip = parts[1].to_string();
+            Some(Self::new(ip, port, services))
+        } else {
+            None
+        }
+    }
+
+    /// Get as socket address string
+    pub fn to_addr_string(&self) -> String {
+        format!("{}:{}", self.ip, self.port)
+    }
+
+    /// Check if this address is routable (not local/private)
+    pub fn is_routable(&self) -> bool {
+        // Simple check - exclude localhost and private ranges
+        !self.ip.starts_with("127.")
+            && !self.ip.starts_with("10.")
+            && !self.ip.starts_with("192.168.")
+            && !self.ip.starts_with("0.")
+            && self.ip != "localhost"
+    }
+}
+
 // =============================================================================
 // Service Flags (Bitcoin-style)
 // =============================================================================
@@ -152,6 +213,15 @@ pub enum Message {
 
     /// Send compact blocks preference
     SendCmpct { enable: bool, version: u64 },
+
+    // =========================================================================
+    // Peer Discovery (new)
+    // =========================================================================
+    
+    /// Request known peer addresses (Bitcoin-style)
+    GetAddr,
+    /// Response with peer addresses (Bitcoin-style)
+    Addr(Vec<NetAddr>),
 }
 
 // =============================================================================
@@ -387,7 +457,26 @@ impl Message {
             Message::BlockTxn { .. } => "BlockTxn",
             Message::FeeFilter(_) => "FeeFilter",
             Message::SendCmpct { .. } => "SendCmpct",
+            Message::GetAddr => "GetAddr",
+            Message::Addr(_) => "Addr",
         }
+    }
+
+    /// Compute SHA-256 checksum of message data (first 4 bytes)
+    pub fn compute_checksum(data: &[u8]) -> [u8; 4] {
+        use sha2::{Sha256, Digest};
+        let hash = Sha256::digest(Sha256::digest(data));
+        [hash[0], hash[1], hash[2], hash[3]]
+    }
+
+    /// Get the 12-byte command name for wire protocol
+    pub fn command(&self) -> [u8; 12] {
+        let name = self.type_name();
+        let mut cmd = [0u8; 12];
+        let bytes = name.as_bytes();
+        let len = bytes.len().min(12);
+        cmd[..len].copy_from_slice(&bytes[..len]);
+        cmd
     }
 
     /// Check if this is a high-bandwidth message

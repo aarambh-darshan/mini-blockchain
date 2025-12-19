@@ -86,6 +86,64 @@ impl Miner {
         Ok((block, stats))
     }
 
+    /// Mine a block without holding blockchain lock (for async/concurrent use)
+    ///
+    /// This method takes snapshot data from the blockchain, performs CPU-intensive
+    /// mining, and returns the mined block. The caller must then add the block
+    /// to the chain with a write lock.
+    pub fn mine_block_detached(
+        &self,
+        current_height: u64,
+        previous_hash: String,
+        difficulty: u32,
+        transactions: Vec<Transaction>,
+    ) -> (Block, MiningStats) {
+        let start = Instant::now();
+
+        // Create coinbase transaction
+        let coinbase = Transaction::coinbase(&self.address, BLOCK_REWARD, current_height + 1);
+
+        // Combine coinbase with other transactions
+        let mut all_transactions = vec![coinbase];
+        all_transactions.extend(transactions);
+
+        // Create new block
+        let mut block = Block::new(
+            current_height + 1,
+            previous_hash,
+            all_transactions,
+            difficulty,
+        );
+
+        info!(
+            "Mining block {} with difficulty {}...",
+            block.index, block.header.difficulty
+        );
+
+        // Mine the block (CPU-intensive)
+        let attempts = block.mine();
+
+        let elapsed = start.elapsed().as_millis();
+        let hash_rate = if elapsed > 0 {
+            (attempts as f64) / (elapsed as f64 / 1000.0)
+        } else {
+            attempts as f64
+        };
+
+        let stats = MiningStats {
+            hash_attempts: attempts,
+            time_ms: elapsed,
+            hash_rate,
+        };
+
+        info!(
+            "Block {} mined in {}ms ({} attempts, {:.2} H/s)",
+            block.index, elapsed, attempts, hash_rate
+        );
+
+        (block, stats)
+    }
+
     /// Continuously mine blocks (for testing)
     pub fn mine_continuously(
         &self,

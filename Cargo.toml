@@ -57,6 +57,9 @@ tokio-tungstenite = "0.26"
 rust-embed = "8.0"
 mime_guess = "2.0"
 
+# UPnP for NAT traversal
+igd-next = "0.15"
+
 [dev-dependencies]
 tempfile = "3.8"
 

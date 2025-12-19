@@ -1,0 +1,19 @@
+{
+  "contracts": {
+    "0x04c4b5c2c1d096de63803f759a49d9657663b33d": {
+      "address": "0x04c4b5c2c1d096de63803f759a49d9657663b33d",
+      "code": [
+        112,
+        0,
+        112,
+        1,
+        16,
+        67
+      ],
+      "storage": {},
+      "deployer": "web-deployer",
+      "deployed_at": 21
+    }
+  },
+  "nonce": 1
+}
